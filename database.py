@@ -67,7 +67,7 @@ class Database:
             "maxIdleTimeMS": 45000,
             "retryWrites": True,
             "retryReads": True,
-            "compressors": "zstd,snappy,zlib",
+            "compressors": "zlib",
         }
 
         if not is_srv:
@@ -152,6 +152,17 @@ class Database:
         ])
 
         # ── Message Logs — TTL auto-expire after 30 days ──
+        # Drop conflicting old index if it exists (non-TTL created_at_1)
+        try:
+            existing = await self.db.message_logs.index_information()
+            if "created_at_1" in existing:
+                ttl = existing["created_at_1"].get("expireAfterSeconds")
+                if ttl is None:
+                    await self.db.message_logs.drop_index("created_at_1")
+                    logger.info("Dropped old created_at_1 index to create TTL variant")
+        except Exception as exc:
+            logger.debug("index migration check: %s", exc)
+
         await self.db.message_logs.create_indexes([
             IndexModel([("session_id", ASCENDING)]),
             IndexModel([("sender_id", ASCENDING)]),
