@@ -1,27 +1,41 @@
 import logging
 import asyncio
-import ssl
+import time
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
 import certifi
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 from pymongo import ReturnDocument
-from pymongo.errors import ServerSelectionTimeoutError, ConnectionFailure, ConfigurationError
+from pymongo.errors import ServerSelectionTimeoutError, ConnectionFailure
 
 from utils.mongo import normalize_mongodb_url
 
 logger = logging.getLogger(__name__)
 
+STATE_IDLE = "idle"
+STATE_SEARCHING = "searching"
+STATE_CHATTING = "chatting"
+
 
 class Database:
     """MongoDB persistence — async, indexed, production-ready."""
 
-    def __init__(self, mongodb_url: str, db_name: str = "anoybot") -> None:
+    def __init__(
+        self,
+        mongodb_url: str,
+        db_name: str = "anoybot",
+        *,
+        user_cache_seconds: float = 8.0,
+    ) -> None:
         self.mongodb_url = mongodb_url
         self.db_name = db_name
+        self.user_cache_seconds = user_cache_seconds
         self._client: AsyncIOMotorClient | None = None
         self._db: AsyncIOMotorDatabase | None = None
+        self._user_cache: dict[int, tuple[float, dict[str, Any]]] = {}
+        self._cache_lock = asyncio.Lock()
 
     async def connect(self, max_retries: int = 5) -> None:
         url = normalize_mongodb_url(self.mongodb_url, self.db_name)
@@ -33,8 +47,8 @@ class Database:
             "serverSelectionTimeoutMS": 30000,
             "connectTimeoutMS": 20000,
             "socketTimeoutMS": 30000,
-            "maxPoolSize": 50,
-            "minPoolSize": 1,
+            "maxPoolSize": 20,
+            "minPoolSize": 0,
             "retryWrites": True,
         }
 
@@ -161,9 +175,25 @@ class Database:
         user = await self.get_user(user_id)
         return user or {}
 
-    async def get_user(self, user_id: int) -> dict[str, Any] | None:
+    def _cache_user(self, user_id: int, doc: dict[str, Any] | None) -> dict[str, Any] | None:
+        if doc is None:
+            self._user_cache.pop(user_id, None)
+            return None
+        payload = dict(doc)
+        self._user_cache[user_id] = (time.monotonic() + self.user_cache_seconds, payload)
+        return payload
+
+    def invalidate_user(self, user_id: int) -> None:
+        self._user_cache.pop(user_id, None)
+
+    async def get_user(self, user_id: int, *, fresh: bool = False) -> dict[str, Any] | None:
+        if not fresh:
+            cached = self._user_cache.get(user_id)
+            if cached and cached[0] > time.monotonic():
+                return dict(cached[1])
+
         doc = await self.db.users.find_one({"user_id": user_id})
-        return dict(doc) if doc else None
+        return self._cache_user(user_id, dict(doc) if doc else None)
 
     async def accept_rules(self, user_id: int) -> None:
         now = self._now()
@@ -171,6 +201,7 @@ class Database:
             {"user_id": user_id},
             {"$set": {"accepted_rules": True, "updated_at": now, "last_active_at": now}},
         )
+        self.invalidate_user(user_id)
 
     async def set_gender(self, user_id: int, gender: str) -> None:
         now = self._now()
@@ -178,6 +209,7 @@ class Database:
             {"user_id": user_id},
             {"$set": {"gender": gender, "updated_at": now, "last_active_at": now}},
         )
+        self.invalidate_user(user_id)
 
     async def set_looking_for(self, user_id: int, looking_for: str) -> None:
         now = self._now()
@@ -185,6 +217,7 @@ class Database:
             {"user_id": user_id},
             {"$set": {"looking_for": looking_for, "updated_at": now, "last_active_at": now}},
         )
+        self.invalidate_user(user_id)
 
     async def set_state(
         self,
@@ -206,21 +239,152 @@ class Database:
                 }
             },
         )
+        self.invalidate_user(user_id)
 
-    async def reset_active_sessions(self) -> int:
+    async def reset_chatting_sessions(self) -> list[int]:
+        """Reset orphaned chats after restart — keep search queue intact."""
         now = self._now()
-        result = await self.db.users.update_many(
-            {"state": {"$in": ["searching", "chatting"]}},
+        cursor = self.db.users.find({"state": STATE_CHATTING}, {"user_id": 1})
+        user_ids = [doc["user_id"] async for doc in cursor]
+        if not user_ids:
+            return []
+
+        await self.db.users.update_many(
+            {"state": STATE_CHATTING},
             {
                 "$set": {
-                    "state": "idle",
+                    "state": STATE_IDLE,
                     "partner_id": None,
                     "session_id": None,
                     "updated_at": now,
                 }
             },
         )
-        return result.modified_count
+        for uid in user_ids:
+            self.invalidate_user(uid)
+        return user_ids
+
+    async def reset_active_sessions(self) -> int:
+        """Legacy helper — only clears chatting state."""
+        cleared = await self.reset_chatting_sessions()
+        return len(cleared)
+
+    async def get_searching_users(self) -> list[dict[str, Any]]:
+        cursor = self.db.users.find(
+            {
+                "state": STATE_SEARCHING,
+                "is_banned": {"$ne": True},
+                "gender": {"$ne": None},
+                "looking_for": {"$ne": None},
+            },
+            {"user_id": 1, "gender": 1, "looking_for": 1, "updated_at": 1},
+        )
+        return [dict(doc) async for doc in cursor]
+
+    async def get_block_set(self, user_id: int) -> set[int]:
+        blocked_by_user = self.db.blocks.find({"user_id": user_id}, {"blocked_id": 1})
+        blocked_user = self.db.blocks.find({"blocked_id": user_id}, {"user_id": 1})
+        ids: set[int] = set()
+        async for doc in blocked_by_user:
+            ids.add(int(doc["blocked_id"]))
+        async for doc in blocked_user:
+            ids.add(int(doc["user_id"]))
+        return ids
+
+    @staticmethod
+    def _partner_gender_filters(gender: str, looking_for: str) -> list[dict[str, Any]]:
+        """Build MongoDB filters for compatible searching partners."""
+        filters: list[dict[str, Any]] = []
+
+        def partner_wants_me(my_gender: str) -> dict[str, Any]:
+            return {
+                "$or": [
+                    {"looking_for": "any"},
+                    {"looking_for": my_gender},
+                ]
+            }
+
+        if looking_for == "any":
+            filters.append(partner_wants_me(gender))
+        else:
+            filters.append({"gender": looking_for})
+            filters.append(partner_wants_me(gender))
+
+        return filters
+
+    async def claim_searching_partner(
+        self,
+        user_id: int,
+        gender: str,
+        looking_for: str,
+        blocked_ids: set[int],
+    ) -> tuple[int, str] | None:
+        """Atomically claim one compatible searching user from MongoDB."""
+        session_id = str(uuid.uuid4())
+        now = self._now()
+        exclude = list(blocked_ids | {user_id})
+
+        for extra in self._partner_gender_filters(gender, looking_for):
+            query: dict[str, Any] = {
+                "state": STATE_SEARCHING,
+                "is_banned": {"$ne": True},
+                "user_id": {"$nin": exclude},
+                **extra,
+            }
+            partner = await self.db.users.find_one_and_update(
+                query,
+                {
+                    "$set": {
+                        "state": STATE_CHATTING,
+                        "partner_id": user_id,
+                        "session_id": session_id,
+                        "updated_at": now,
+                        "last_active_at": now,
+                    }
+                },
+                sort=[("updated_at", 1)],
+                return_document=ReturnDocument.AFTER,
+            )
+            if not partner:
+                continue
+
+            partner_id = int(partner["user_id"])
+            claimed = await self.db.users.update_one(
+                {
+                    "user_id": user_id,
+                    "state": {"$in": [STATE_IDLE, STATE_SEARCHING]},
+                },
+                {
+                    "$set": {
+                        "state": STATE_CHATTING,
+                        "partner_id": partner_id,
+                        "session_id": session_id,
+                        "updated_at": now,
+                        "last_active_at": now,
+                    }
+                },
+            )
+            if claimed.modified_count:
+                self.invalidate_user(user_id)
+                self.invalidate_user(partner_id)
+                return partner_id, session_id
+
+            await self.db.users.update_one(
+                {
+                    "user_id": partner_id,
+                    "session_id": session_id,
+                },
+                {
+                    "$set": {
+                        "state": STATE_SEARCHING,
+                        "partner_id": None,
+                        "session_id": None,
+                        "updated_at": now,
+                    }
+                },
+            )
+            self.invalidate_user(partner_id)
+        return None
 
     async def create_session(self, session_id: str, user_a: int, user_b: int) -> None:
         now = self._now()
@@ -243,10 +407,9 @@ class Database:
 
     async def end_session(self, session_id: str) -> None:
         now = self._now()
-        msg_count = await self.db.message_logs.count_documents({"session_id": session_id})
         await self.db.sessions.update_one(
             {"session_id": session_id},
-            {"$set": {"ended_at": now, "message_count": msg_count}},
+            {"$set": {"ended_at": now}},
         )
 
     async def save_session_rating(self, session_id: str, user_id: int, stars: int) -> None:
@@ -292,10 +455,15 @@ class Database:
                 "created_at": now,
             }
         )
+        await self.db.sessions.update_one(
+            {"session_id": session_id},
+            {"$inc": {"message_count": 1}},
+        )
         await self.db.users.update_one(
             {"user_id": sender_id},
             {"$inc": {"total_messages": 1}, "$set": {"last_active_at": now}},
         )
+        self.invalidate_user(sender_id)
 
     async def add_block(self, user_id: int, blocked_id: int) -> None:
         now = self._now()
@@ -324,6 +492,7 @@ class Database:
                 }
             },
         )
+        self.invalidate_user(user_id)
 
     async def unban_user(self, user_id: int) -> None:
         now = self._now()
@@ -331,6 +500,7 @@ class Database:
             {"user_id": user_id},
             {"$set": {"is_banned": False, "ban_reason": None, "updated_at": now}},
         )
+        self.invalidate_user(user_id)
 
     async def increment_reports(self, user_id: int) -> int:
         now = self._now()

@@ -16,6 +16,10 @@ class Config:
     telegram_api_base_url: str | None
     telegram_api_file_url: str | None
     match_timeout_seconds: int
+    match_widen_seconds: int
+    search_pulse_seconds: int
+    stats_cache_seconds: int
+    user_cache_seconds: int
     max_message_length: int
     rate_limit_per_minute: int
     brand_name: str
@@ -47,6 +51,10 @@ def load_config() -> Config:
         telegram_api_base_url=os.getenv("TELEGRAM_API_BASE_URL", "").strip() or None,
         telegram_api_file_url=os.getenv("TELEGRAM_API_FILE_URL", "").strip() or None,
         match_timeout_seconds=int(os.getenv("MATCH_TIMEOUT_SECONDS", "300")),
+        match_widen_seconds=int(os.getenv("MATCH_WIDEN_SECONDS", "90")),
+        search_pulse_seconds=int(os.getenv("SEARCH_PULSE_SECONDS", "25")),
+        stats_cache_seconds=int(os.getenv("STATS_CACHE_SECONDS", "30")),
+        user_cache_seconds=int(os.getenv("USER_CACHE_SECONDS", "8")),
         max_message_length=int(os.getenv("MAX_MESSAGE_LENGTH", "4096")),
         rate_limit_per_minute=int(os.getenv("RATE_LIMIT_PER_MINUTE", "25")),
         brand_name=os.getenv("BRAND_NAME", "AnoyBot"),

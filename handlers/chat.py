@@ -1,3 +1,6 @@
+import asyncio
+import logging
+
 from telegram import Update
 from telegram.ext import ContextTypes
 
@@ -7,9 +10,32 @@ from keyboards.buttons import main_menu_keyboard
 from services.logger import log_to_channel
 from services.matcher import STATE_CHATTING
 from handlers.session import end_chat
-from utils.helpers import chat_to_user, is_banned, menu_for_user
+from utils.helpers import is_banned, menu_for_user
 from utils.ratelimit import RateLimiter
 from utils.texts import BANNED, NOT_IN_CHAT, RATE_LIMITED, REPORT_SENT
+
+logger = logging.getLogger(__name__)
+
+
+async def _persist_message_log(
+    db: Database,
+    *,
+    session_id: str,
+    sender_id: int,
+    receiver_id: int,
+    message_type: str,
+    content: str,
+) -> None:
+    try:
+        await db.log_message(
+            session_id=session_id,
+            sender_id=sender_id,
+            receiver_id=receiver_id,
+            message_type=message_type,
+            content_preview=content,
+        )
+    except Exception as exc:
+        logger.debug("async log_message failed: %s", exc)
 
 
 async def relay_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -60,28 +86,32 @@ async def relay_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await end_chat(context, user.id, reason="partner_left")
         return
 
-    try:
-        partner_user = chat_to_user(await context.bot.get_chat(partner_id))
-        await log_to_channel(
-            context,
-            config.log_channel_id,
-            db,
-            event="💬 Message",
-            user=user,
-            partner=partner_user,
-            session_id=session_id,
-            message_type=msg.content_type,
-            content=content,
+    if session_id and config.log_channel_id:
+        asyncio.create_task(
+            log_to_channel(
+                context,
+                config.log_channel_id,
+                db,
+                event="💬 Message",
+                user=user,
+                partner=None,
+                session_id=session_id,
+                message_type=msg.content_type,
+                content=content,
+                extra=f"Partner ID: {partner_id}",
+                persist_message=False,
+            )
         )
-    except Exception:
-        if session_id:
-            await db.log_message(
+        asyncio.create_task(
+            _persist_message_log(
+                db,
                 session_id=session_id,
                 sender_id=user.id,
                 receiver_id=partner_id,
                 message_type=msg.content_type,
-                content_preview=content,
+                content=content,
             )
+        )
 
 
 async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -97,10 +127,8 @@ async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     session_id = record.get("session_id") if record else None
     reason = " ".join(context.args) if context.args else "No details provided"
 
-    partner_user = None
     if partner_id:
         try:
-            partner_user = chat_to_user(await context.bot.get_chat(partner_id))
             await db.add_report(user.id, partner_id, session_id, reason)
             count = await db.increment_reports(partner_id)
             if count >= config.auto_ban_reports:
@@ -114,9 +142,9 @@ async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         db,
         event="🚨 ABUSE REPORT",
         user=user,
-        partner=partner_user,
+        partner=None,
         session_id=session_id,
-        extra=f"Reason: {reason}",
+        extra=f"Partner: {partner_id} | Reason: {reason}" if partner_id else f"Reason: {reason}",
         persist_message=False,
     )
 

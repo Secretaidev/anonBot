@@ -62,14 +62,17 @@ from utils.texts import (
 )
 
 
-async def _search_screen(context: ContextTypes.DEFAULT_TYPE, matcher: Matcher, db: Database) -> str:
-    stats = await db.get_stats()
+async def _search_screen(
+    context: ContextTypes.DEFAULT_TYPE,
+    matcher: Matcher,
+    stats: dict,
+) -> str:
     pulse_idx = context.application.bot_data.get("pulse_idx", 0)
     from utils.texts import PULSE_FRAMES
     pulse = PULSE_FRAMES[pulse_idx % len(PULSE_FRAMES)]
     return SEARCHING.format(
         pulse=pulse,
-        online=await matcher.queue_size(),
+        online=max(stats.get("searching", 0), await matcher.queue_size()),
         chatting=stats["chatting"],
     )
 
@@ -94,6 +97,9 @@ async def _start_search(
 
     await db.set_state(user_id, STATE_SEARCHING)
     matched, _ = await matcher.join(user_id, record["gender"], record["looking_for"])
+    stats_cache = context.application.bot_data.get("stats_cache")
+    if stats_cache:
+        stats_cache.invalidate()
 
     if matched:
         untrack_search_card(context, user_id)
@@ -103,7 +109,9 @@ async def _start_search(
             reply_markup=main_menu_keyboard(is_chatting=True),
         )
     else:
-        text = await _search_screen(context, matcher, db)
+        stats_cache = context.application.bot_data["stats_cache"]
+        stats = await stats_cache.get(context.bot_data["db"].get_stats)
+        text = await _search_screen(context, matcher, stats)
         await safe_edit(
             query,
             text,
@@ -242,6 +250,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await matcher.leave(user.id)
         await db.set_state(user.id, STATE_IDLE)
         untrack_search_card(context, user.id)
+        stats_cache = context.application.bot_data.get("stats_cache")
+        if stats_cache:
+            stats_cache.invalidate()
         await safe_edit(query, SEARCH_CANCELLED, reply_markup=main_menu_keyboard())
         return
 
@@ -324,7 +335,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
 
     if action == ACT_STATS:
-        stats = await db.get_stats()
+        stats_cache = context.application.bot_data["stats_cache"]
+        stats = await stats_cache.get(db.get_stats)
         queue = await matcher.queue_size()
         record = await db.get_user(user.id)
         await safe_edit(

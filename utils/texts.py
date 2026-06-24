@@ -67,6 +67,10 @@ CHAT_PARTNER_LEFT = "👋 Your partner disconnected."
 CHAT_NEXT = "⏭ Finding your next partner…"
 SEARCH_CANCELLED = "🛑 Search cancelled."
 PARTNER_FOUND_HINT = "🎉 Connected! Check the message above."
+SEARCH_BLOCKED_RETRY = (
+    "🔄 Previous match was blocked.\n"
+    "Searching again for a new partner…"
+)
 SEARCH_TIMEOUT = "⏱ No partner found in time. Tap 🔍 Find Partner to try again."
 
 CONFIRM_END = (

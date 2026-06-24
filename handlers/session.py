@@ -4,9 +4,9 @@ from config import Config
 from database import Database
 from keyboards.buttons import feedback_keyboard, main_menu_keyboard
 from services.logger import log_to_channel
-from services.matcher import Matcher, STATE_CHATTING, STATE_IDLE
+from services.matcher import Matcher, STATE_CHATTING, STATE_IDLE, STATE_SEARCHING
 from utils.helpers import chat_to_user, safe_send, untrack_search_card
-from utils.texts import CHAT_ENDED, CHAT_NEXT, CHAT_PARTNER_LEFT, FEEDBACK, MATCHED
+from utils.texts import CHAT_ENDED, CHAT_NEXT, CHAT_PARTNER_LEFT, FEEDBACK, MATCHED, SEARCH_BLOCKED_RETRY
 
 
 async def notify_matched(
@@ -20,10 +20,24 @@ async def notify_matched(
     matcher: Matcher = context.bot_data["matcher"]
 
     if await db.is_blocked(user_a, user_b) or await db.is_blocked(user_b, user_a):
-        await matcher.leave(user_a)
-        await matcher.leave(user_b)
         await db.set_state(user_a, STATE_IDLE)
         await db.set_state(user_b, STATE_IDLE)
+        untrack_search_card(context, user_a)
+        untrack_search_card(context, user_b)
+
+        for uid in (user_a, user_b):
+            record = await db.get_user(uid, fresh=True)
+            if not record:
+                continue
+            gender = record.get("gender")
+            looking = record.get("looking_for")
+            if not gender or not looking:
+                await safe_send(context, uid, SEARCH_BLOCKED_RETRY, reply_markup=main_menu_keyboard())
+                continue
+            await db.set_state(uid, STATE_SEARCHING)
+            matched, _ = await matcher.join(uid, gender, looking)
+            if not matched:
+                await safe_send(context, uid, SEARCH_BLOCKED_RETRY, reply_markup=main_menu_keyboard(is_searching=True))
         return
 
     untrack_search_card(context, user_a)
@@ -32,6 +46,9 @@ async def notify_matched(
     await db.set_state(user_a, STATE_CHATTING, partner_id=user_b, session_id=session_id)
     await db.set_state(user_b, STATE_CHATTING, partner_id=user_a, session_id=session_id)
     await db.create_session(session_id, user_a, user_b)
+    stats_cache = context.bot_data.get("stats_cache")
+    if stats_cache:
+        stats_cache.invalidate()
 
     kb = main_menu_keyboard(is_chatting=True)
     for uid in (user_a, user_b):
@@ -76,7 +93,7 @@ async def end_chat(
     config: Config = context.bot_data["config"]
     matcher: Matcher = context.bot_data["matcher"]
 
-    record = await db.get_user(user_id)
+    record = await db.get_user(user_id, fresh=True)
     if not record or record.get("state") != STATE_CHATTING:
         return
 
@@ -86,6 +103,10 @@ async def end_chat(
     await db.set_state(user_id, STATE_IDLE, partner_id=None, session_id=None)
     if partner_id:
         await db.set_state(partner_id, STATE_IDLE, partner_id=None, session_id=None)
+
+    stats_cache = context.bot_data.get("stats_cache")
+    if stats_cache:
+        stats_cache.invalidate()
 
     if session_id:
         await db.end_session(session_id)

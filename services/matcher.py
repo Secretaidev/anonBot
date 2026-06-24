@@ -4,7 +4,10 @@ import time
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable
+from typing import TYPE_CHECKING, Awaitable, Callable
+
+if TYPE_CHECKING:
+    from database import Database
 
 logger = logging.getLogger(__name__)
 
@@ -27,22 +30,35 @@ class QueueEntry:
     gender: str
     looking_for: str
     joined_at: float
+    widen_at: float
 
 
 def _compatible(a: QueueEntry, b: QueueEntry) -> bool:
-    def wants(entry: QueueEntry, target_gender: str) -> bool:
-        if entry.looking_for == LOOKING_ANY:
+    def wants(looking_for: str, target_gender: str) -> bool:
+        if looking_for == LOOKING_ANY:
             return True
-        return entry.looking_for == target_gender
+        return looking_for == target_gender
 
-    return wants(a, b.gender) and wants(b, a.gender)
+    a_look = _effective_looking_for(a)
+    b_look = _effective_looking_for(b)
+    return wants(a_look, b.gender) and wants(b_look, a.gender)
+
+
+def _effective_looking_for(entry: QueueEntry) -> str:
+    if entry.looking_for != LOOKING_ANY:
+        return entry.looking_for
+    if time.monotonic() >= entry.widen_at:
+        return LOOKING_ANY
+    return entry.looking_for
 
 
 @dataclass
 class Matcher:
-    """Fast in-memory matchmaking with bucket hints and timeout sweep."""
+    """Hybrid matchmaking: in-memory speed + MongoDB atomic claims for reliability."""
 
+    db: "Database | None" = None
     timeout_seconds: float = 300.0
+    widen_after_seconds: float = 90.0
     _queue: dict[int, QueueEntry] = field(default_factory=dict)
     _buckets: dict[str, set[int]] = field(default_factory=lambda: defaultdict(set))
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -74,9 +90,9 @@ class Matcher:
                 del self._buckets[key]
 
     def _candidate_ids(self, entry: QueueEntry) -> list[int]:
-        """Prefer same-preference bucket, then scan full queue."""
-        keys = [self._bucket_key(entry.gender, entry.looking_for)]
-        if entry.looking_for != LOOKING_ANY:
+        looking = _effective_looking_for(entry)
+        keys = [self._bucket_key(entry.gender, looking)]
+        if looking != LOOKING_ANY:
             keys.append(self._bucket_key(entry.gender, LOOKING_ANY))
         keys.append("*")
 
@@ -93,22 +109,73 @@ class Matcher:
                     ordered.append(uid)
         return ordered
 
+    async def _blocked_between(self, user_a: int, user_b: int) -> bool:
+        if not self.db:
+            return False
+        blocked = await self.db.get_block_set(user_a)
+        return user_b in blocked
+
+    async def rehydrate_from_db(self) -> int:
+        """Restore search queue after restart so waiting users can still match."""
+        if not self.db:
+            return 0
+
+        restored = 0
+        async with self._lock:
+            for doc in await self.db.get_searching_users():
+                user_id = int(doc["user_id"])
+                if user_id in self._queue:
+                    continue
+                entry = QueueEntry(
+                    user_id=user_id,
+                    gender=str(doc["gender"]),
+                    looking_for=str(doc["looking_for"]),
+                    joined_at=time.monotonic(),
+                    widen_at=time.monotonic() + self.widen_after_seconds,
+                )
+                self._queue[user_id] = entry
+                self._add_to_bucket(entry)
+                restored += 1
+        if restored:
+            logger.info("Rehydrated %s searching user(s) from MongoDB", restored)
+        return restored
+
     async def join(self, user_id: int, gender: str, looking_for: str) -> tuple[bool, str | None]:
         session_id: str | None = None
         match_pair: tuple[int, int] | None = None
+        blocked: set[int] = set()
 
         async with self._lock:
-            if user_id in self._queue:
-                return False, None
+            if self.db:
+                record = await self.db.get_user(user_id, fresh=True)
+                if record and record.get("state") == STATE_CHATTING:
+                    return True, record.get("session_id")
 
-            entry = QueueEntry(
-                user_id=user_id,
-                gender=gender,
-                looking_for=looking_for,
-                joined_at=time.monotonic(),
-            )
+            if user_id in self._queue:
+                old = self._queue[user_id]
+                self._remove_from_bucket(old)
+                entry = QueueEntry(
+                    user_id=user_id,
+                    gender=gender,
+                    looking_for=looking_for,
+                    joined_at=old.joined_at,
+                    widen_at=old.widen_at,
+                )
+            else:
+                entry = QueueEntry(
+                    user_id=user_id,
+                    gender=gender,
+                    looking_for=looking_for,
+                    joined_at=time.monotonic(),
+                    widen_at=time.monotonic() + self.widen_after_seconds,
+                )
+
+            if self.db:
+                blocked = await self.db.get_block_set(user_id)
 
             for other_id in self._candidate_ids(entry):
+                if other_id in blocked or await self._blocked_between(other_id, user_id):
+                    continue
                 other = self._queue.get(other_id)
                 if other and _compatible(entry, other):
                     del self._queue[other_id]
@@ -117,10 +184,24 @@ class Matcher:
                     match_pair = (user_id, other_id)
                     break
 
+            if not match_pair and self.db:
+                claim = await self.db.claim_searching_partner(
+                    user_id, gender, _effective_looking_for(entry), blocked
+                )
+                if claim:
+                    partner_id, session_id = claim
+                    self._queue.pop(user_id, None)
+                    partner_entry = self._queue.pop(partner_id, None)
+                    if partner_entry:
+                        self._remove_from_bucket(partner_entry)
+                    match_pair = (user_id, partner_id)
+
             if not match_pair:
                 self._queue[user_id] = entry
                 self._add_to_bucket(entry)
                 return False, None
+
+            self._queue.pop(user_id, None)
 
         if match_pair and session_id and self._on_match:
             try:
@@ -142,10 +223,9 @@ class Matcher:
         return len(self._queue)
 
     async def online_count(self) -> int:
-        return len(self._queue)
+        return await self.queue_size()
 
     async def sweep_timeouts(self) -> list[int]:
-        """Remove users waiting longer than timeout_seconds."""
         expired: list[int] = []
         now = time.monotonic()
         async with self._lock:
