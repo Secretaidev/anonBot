@@ -24,6 +24,7 @@ class Config:
     rate_limit_per_minute: int
     brand_name: str
     auto_ban_reports: int
+    log_chat_messages: bool
 
 
 def load_config() -> Config:
