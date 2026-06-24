@@ -1,9 +1,8 @@
 """Admin commands — /stats, /user, /ban, /unban, /broadcast.
 
-Improvements:
-  • Broadcast uses asyncio.Semaphore for concurrent sends (configurable)
-  • Progress reporting during broadcast
-  • All admin commands check _is_admin first
+Now uses granular permission system:
+  • Owner (ADMIN_IDS) → all commands
+  • DB Admin → permission-gated
 """
 
 import asyncio
@@ -17,14 +16,19 @@ from services.logger import log_to_channel
 from utils.helpers import safe_send
 
 
-def _is_admin(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
-    return user_id in context.bot_data["config"].admin_ids
+async def _has_perm(context: ContextTypes.DEFAULT_TYPE, user_id: int, perm: str) -> bool:
+    """Check if user is owner or has specific DB admin permission."""
+    config = context.bot_data["config"]
+    if user_id in config.admin_ids:
+        return True
+    db: Database = context.bot_data["db"]
+    return await db.has_permission(user_id, perm, config.admin_ids)
 
 
 async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_user or not update.message:
         return
-    if not _is_admin(context, update.effective_user.id):
+    if not await _has_perm(context, update.effective_user.id, "stats"):
         return
 
     db: Database = context.bot_data["db"]
@@ -48,7 +52,7 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def admin_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_user or not update.message:
         return
-    if not _is_admin(context, update.effective_user.id):
+    if not await _has_perm(context, update.effective_user.id, "user_lookup"):
         return
 
     if not context.args:
@@ -92,7 +96,7 @@ async def admin_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def admin_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_user or not update.message:
         return
-    if not _is_admin(context, update.effective_user.id):
+    if not await _has_perm(context, update.effective_user.id, "ban"):
         return
 
     if not context.args:
@@ -129,7 +133,7 @@ async def admin_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def admin_unban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_user or not update.message:
         return
-    if not _is_admin(context, update.effective_user.id):
+    if not await _has_perm(context, update.effective_user.id, "unban"):
         return
 
     if not context.args:
@@ -148,14 +152,10 @@ async def admin_unban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Broadcast to all non-banned users with concurrent sends + progress reports.
-
-    Uses asyncio.Semaphore to limit concurrent API calls (configurable via
-    BROADCAST_CONCURRENCY env var, default 20).
-    """
+    """Broadcast to all non-banned users with concurrent sends + progress reports."""
     if not update.effective_user or not update.message:
         return
-    if not _is_admin(context, update.effective_user.id):
+    if not await _has_perm(context, update.effective_user.id, "broadcast"):
         return
 
     if not context.args:
@@ -186,7 +186,6 @@ async def admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         async with sem:
             return await safe_send(context, uid, broadcast_text)
 
-    # Process in batches for progress reporting
     batch_size = max(total // 5, 50)
     for i in range(0, total, batch_size):
         batch = user_ids[i:i + batch_size]
@@ -194,7 +193,6 @@ async def admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         sent += sum(1 for r in results if r)
         failed += sum(1 for r in results if not r)
 
-        # Update progress (don't spam — only every batch)
         try:
             pct = int((i + len(batch)) / total * 100)
             await progress_msg.edit_text(

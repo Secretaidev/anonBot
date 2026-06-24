@@ -27,6 +27,7 @@ async def setup_bot_commands(application: Application) -> None:
             BotCommand("menu", "Main menu"),
             BotCommand("stop", "End chat or cancel search"),
             BotCommand("report", "Report abuse"),
+            BotCommand("panel", "Admin / Owner panel"),
         ]
     )
 

@@ -60,6 +60,12 @@ async def relay_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not update.effective_user or not update.message:
         return
 
+    # ── Panel input interception ──
+    # When admin is entering a user ID / broadcast message, consume it here
+    from handlers.panel import handle_panel_input
+    if await handle_panel_input(update, context):
+        return
+
     user = update.effective_user
     db: Database = context.bot_data["db"]
     config: Config = context.bot_data["config"]

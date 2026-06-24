@@ -23,6 +23,7 @@ from config import load_config
 from database import Database
 from handlers.admin import admin_ban, admin_broadcast, admin_stats, admin_unban, admin_user
 from handlers.callbacks import callback_handler
+from handlers.panel import panel_callback, panel_command
 from handlers.chat import relay_message, report_command
 from handlers.errors import error_handler
 from handlers.session import notify_matched
@@ -183,6 +184,9 @@ def _build_application(config) -> Application:
     app.add_handler(CommandHandler("ban", admin_ban))
     app.add_handler(CommandHandler("unban", admin_unban))
     app.add_handler(CommandHandler("broadcast", admin_broadcast))
+    app.add_handler(CommandHandler("panel", panel_command))
+    # Panel callbacks (p: prefix) must be registered BEFORE general callback handler
+    app.add_handler(CallbackQueryHandler(panel_callback, pattern=r"^p:"))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(
         MessageHandler(

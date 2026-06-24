@@ -1,12 +1,23 @@
-"""Premium inline keyboards — primary=blue, success=green, danger=red."""
+"""Premium inline keyboards — primary=blue, success=green, danger=red.
+
+Includes:
+  • User-facing keyboards (menu, settings, feedback, etc.)
+  • Owner Panel keyboards (full control)
+  • Admin Panel keyboards (permission-gated)
+  • Permission editor with toggle buttons
+"""
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import KeyboardButtonStyle as S
 
+# ── User callback prefixes ──
 CB_GENDER = "g:"
 CB_LOOKING = "l:"
 CB_ACTION = "a:"
 CB_RATE = "r:"
+
+# ── Panel callback prefix ──
+CB_PANEL = "p:"
 
 GENDER_MALE = "male"
 GENDER_FEMALE = "female"
@@ -32,10 +43,45 @@ ACT_REPORT_CONFIRM = "report_confirm"
 ACT_BLOCK = "block"
 ACT_SKIP_FEEDBACK = "skip_feedback"
 
+# ── Panel actions ──
+PA_MAIN = "main"
+PA_STATS = "stats"
+PA_USERS = "users"
+PA_USER_LOOKUP = "ul"
+PA_USER_BAN = "ub"
+PA_USER_UNBAN = "uu"
+PA_BROADCAST = "bc"
+PA_ADMINS = "adm"
+PA_ADMIN_ADD = "aa"
+PA_ADMIN_RM = "ar"       # + :uid
+PA_ADMIN_RM_YES = "ary"  # + :uid
+PA_ADMIN_EDIT = "ae"     # + :uid
+PA_PERM_TOGGLE = "pt"    # + :uid:perm
+PA_SAVE_ADMIN = "sa"     # + :uid
+PA_REPORTS = "rp"
+PA_QUEUE = "qu"
+PA_FORCE_DC = "fd"       # + :uid
+PA_HOME = "home"
+
+# ── Permission definitions ──
+ALL_PERMISSIONS = [
+    ("stats", "📊 Stats"),
+    ("user_lookup", "👤 Lookup"),
+    ("ban", "🔨 Ban"),
+    ("unban", "🔓 Unban"),
+    ("broadcast", "📢 Broadcast"),
+    ("view_reports", "📋 Reports"),
+    ("manage_search", "🔍 Queue"),
+]
+
+PERM_LABELS = {k: v for k, v in ALL_PERMISSIONS}
+
 
 def _btn(text: str, data: str, *, style: str | None = None) -> InlineKeyboardButton:
     return InlineKeyboardButton(text, callback_data=data, style=style)
 
+
+# ── User keyboards ──
 
 def rules_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
@@ -154,3 +200,145 @@ def feedback_keyboard() -> InlineKeyboardMarkup:
             [_btn("Skip", f"{CB_ACTION}{ACT_SKIP_FEEDBACK}", style=S.DANGER)],
         ]
     )
+
+
+# ═══════════════════════════════════════════════════════════════
+# Panel keyboards (Owner + Admin)
+# ═══════════════════════════════════════════════════════════════
+
+def _pbtn(text: str, action: str, *, style: str | None = None) -> InlineKeyboardButton:
+    """Panel button — prefixed with p:"""
+    return _btn(text, f"{CB_PANEL}{action}", style=style)
+
+
+def owner_panel_keyboard() -> InlineKeyboardMarkup:
+    """Full owner panel — all actions available."""
+    return InlineKeyboardMarkup([
+        [
+            _pbtn("📊 Live Stats", PA_STATS, style=S.SUCCESS),
+            _pbtn("👥 Users", PA_USERS, style=S.PRIMARY),
+        ],
+        [
+            _pbtn("📢 Broadcast", PA_BROADCAST, style=S.PRIMARY),
+            _pbtn("👮 Admins", PA_ADMINS, style=S.PRIMARY),
+        ],
+        [
+            _pbtn("📋 Reports", PA_REPORTS, style=S.DANGER),
+            _pbtn("🔍 Queue", PA_QUEUE, style=S.SUCCESS),
+        ],
+        [_pbtn("🏠 Back to Bot", PA_HOME, style=S.PRIMARY)],
+    ])
+
+
+def admin_panel_keyboard(permissions: list[str]) -> InlineKeyboardMarkup:
+    """Permission-gated admin panel — only shows what admin can do."""
+    rows: list[list[InlineKeyboardButton]] = []
+
+    row1 = []
+    if "stats" in permissions:
+        row1.append(_pbtn("📊 Stats", PA_STATS, style=S.SUCCESS))
+    if "user_lookup" in permissions:
+        row1.append(_pbtn("👤 Lookup", PA_USER_LOOKUP, style=S.PRIMARY))
+    if row1:
+        rows.append(row1)
+
+    row2 = []
+    if "ban" in permissions:
+        row2.append(_pbtn("🔨 Ban", PA_USER_BAN, style=S.DANGER))
+    if "unban" in permissions:
+        row2.append(_pbtn("🔓 Unban", PA_USER_UNBAN, style=S.SUCCESS))
+    if row2:
+        rows.append(row2)
+
+    row3 = []
+    if "broadcast" in permissions:
+        row3.append(_pbtn("📢 Broadcast", PA_BROADCAST, style=S.PRIMARY))
+    if "view_reports" in permissions:
+        row3.append(_pbtn("📋 Reports", PA_REPORTS, style=S.DANGER))
+    if row3:
+        rows.append(row3)
+
+    if "manage_search" in permissions:
+        rows.append([_pbtn("🔍 Queue", PA_QUEUE, style=S.SUCCESS)])
+
+    rows.append([_pbtn("🏠 Back to Bot", PA_HOME, style=S.PRIMARY)])
+    return InlineKeyboardMarkup(rows)
+
+
+def user_management_keyboard() -> InlineKeyboardMarkup:
+    """User management sub-menu."""
+    return InlineKeyboardMarkup([
+        [_pbtn("👤 Lookup User", PA_USER_LOOKUP, style=S.PRIMARY)],
+        [
+            _pbtn("🔨 Ban User", PA_USER_BAN, style=S.DANGER),
+            _pbtn("🔓 Unban User", PA_USER_UNBAN, style=S.SUCCESS),
+        ],
+        [_pbtn("⬅️ Back", PA_MAIN, style=S.PRIMARY)],
+    ])
+
+
+def admin_list_keyboard(
+    admins: list[dict],
+    owner_ids: frozenset[int],
+) -> InlineKeyboardMarkup:
+    """List of admins with edit/remove buttons."""
+    rows: list[list[InlineKeyboardButton]] = []
+    for adm in admins:
+        uid = adm["user_id"]
+        if uid in owner_ids:
+            continue  # don't show owners in admin list
+        perms = adm.get("permissions", [])
+        label = f"👮 {uid} ({len(perms)} perms)"
+        rows.append([
+            _pbtn(label, f"{PA_ADMIN_EDIT}:{uid}", style=S.PRIMARY),
+            _pbtn("🗑", f"{PA_ADMIN_RM}:{uid}", style=S.DANGER),
+        ])
+
+    rows.append([_pbtn("➕ Add Admin", PA_ADMIN_ADD, style=S.SUCCESS)])
+    rows.append([_pbtn("⬅️ Back", PA_MAIN, style=S.PRIMARY)])
+    return InlineKeyboardMarkup(rows)
+
+
+def permission_editor_keyboard(
+    target_uid: int,
+    current_perms: list[str],
+) -> InlineKeyboardMarkup:
+    """Toggle grid — each permission shows ✅ or ❌."""
+    rows: list[list[InlineKeyboardButton]] = []
+    for perm_key, perm_label in ALL_PERMISSIONS:
+        is_on = perm_key in current_perms
+        icon = "✅" if is_on else "❌"
+        rows.append([
+            _pbtn(
+                f"{icon} {perm_label}",
+                f"{PA_PERM_TOGGLE}:{target_uid}:{perm_key}",
+                style=S.SUCCESS if is_on else S.DANGER,
+            )
+        ])
+
+    rows.append([
+        _pbtn("💾 Save", f"{PA_SAVE_ADMIN}:{target_uid}", style=S.SUCCESS),
+        _pbtn("❌ Cancel", PA_ADMINS, style=S.DANGER),
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
+def confirm_remove_admin_keyboard(target_uid: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            _pbtn("✅ Yes, Remove", f"{PA_ADMIN_RM_YES}:{target_uid}", style=S.DANGER),
+            _pbtn("❌ Cancel", PA_ADMINS, style=S.SUCCESS),
+        ]
+    ])
+
+
+def panel_back_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [_pbtn("⬅️ Back to Panel", PA_MAIN, style=S.PRIMARY)],
+    ])
+
+
+def panel_input_cancel_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [_pbtn("❌ Cancel", PA_MAIN, style=S.DANGER)],
+    ])

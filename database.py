@@ -186,6 +186,12 @@ class Database:
         await self.db.reports.create_indexes([
             IndexModel([("reporter_id", ASCENDING)]),
             IndexModel([("reported_id", ASCENDING)]),
+            IndexModel([("created_at", ASCENDING)]),
+        ])
+
+        # ── Admins ──
+        await self.db.admins.create_indexes([
+            IndexModel([("user_id", ASCENDING)], unique=True),
         ])
 
     # ──────────────────────────────────────────────────────────────
@@ -718,3 +724,96 @@ class Database:
             {"user_id": 1, "state": 1},
         )
         return {int(doc["user_id"]): dict(doc) async for doc in cursor}
+
+    # ──────────────────────────────────────────────────────────────
+    # Admin management (Owner/Admin panel)
+    # ──────────────────────────────────────────────────────────────
+
+    async def get_admin(self, user_id: int) -> dict[str, Any] | None:
+        doc = await self.db.admins.find_one({"user_id": user_id})
+        return dict(doc) if doc else None
+
+    async def add_admin(
+        self,
+        user_id: int,
+        added_by: int,
+        permissions: list[str],
+    ) -> None:
+        now = self._now_iso()
+        await self.db.admins.update_one(
+            {"user_id": user_id},
+            {
+                "$set": {
+                    "permissions": permissions,
+                    "added_by": added_by,
+                    "updated_at": now,
+                },
+                "$setOnInsert": {"created_at": now},
+            },
+            upsert=True,
+        )
+
+    async def remove_admin(self, user_id: int) -> bool:
+        result = await self.db.admins.delete_one({"user_id": user_id})
+        return result.deleted_count > 0
+
+    async def update_admin_permissions(
+        self, user_id: int, permissions: list[str]
+    ) -> None:
+        now = self._now_iso()
+        await self.db.admins.update_one(
+            {"user_id": user_id},
+            {"$set": {"permissions": permissions, "updated_at": now}},
+        )
+
+    async def list_admins(self) -> list[dict[str, Any]]:
+        cursor = self.db.admins.find({})
+        return [dict(doc) async for doc in cursor]
+
+    async def has_permission(
+        self,
+        user_id: int,
+        permission: str,
+        owner_ids: frozenset[int],
+    ) -> bool:
+        """Check if user has a specific permission (owner = all perms)."""
+        if user_id in owner_ids:
+            return True
+        admin = await self.get_admin(user_id)
+        if not admin:
+            return False
+        return permission in admin.get("permissions", [])
+
+    async def is_staff(
+        self, user_id: int, owner_ids: frozenset[int]
+    ) -> bool:
+        """True if user is owner or DB admin."""
+        if user_id in owner_ids:
+            return True
+        admin = await self.get_admin(user_id)
+        return admin is not None
+
+    # ──────────────────────────────────────────────────────────────
+    # Reports & monitoring
+    # ──────────────────────────────────────────────────────────────
+
+    async def get_recent_reports(self, limit: int = 10) -> list[dict[str, Any]]:
+        cursor = self.db.reports.find({}).sort("created_at", -1).limit(limit)
+        return [dict(doc) async for doc in cursor]
+
+    async def get_chatting_pairs(self) -> list[tuple[int, int]]:
+        """Return list of (user_a, partner) pairs currently chatting."""
+        cursor = self.db.users.find(
+            {"state": STATE_CHATTING, "partner_id": {"$ne": None}},
+            {"user_id": 1, "partner_id": 1},
+        )
+        seen: set[int] = set()
+        pairs: list[tuple[int, int]] = []
+        async for doc in cursor:
+            uid = int(doc["user_id"])
+            pid = int(doc["partner_id"])
+            if uid not in seen and pid not in seen:
+                pairs.append((uid, pid))
+                seen.add(uid)
+                seen.add(pid)
+        return pairs

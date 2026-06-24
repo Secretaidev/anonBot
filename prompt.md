@@ -1,4 +1,4 @@
-# AnoyBot — Master AI Prompt (v2)
+# AnoyBot — Master AI Prompt
 
 Use this when extending, fixing, or rebuilding this Telegram anonymous chat bot. Target: **world-class production bot** — zero errors, minimal server load, premium UX, MongoDB persistence.
 
@@ -63,11 +63,41 @@ utils/mongo.py          → normalize MongoDB connection URL
 handlers/start.py       → /start, /menu
 handlers/callbacks.py   → all button callbacks + star ratings (null-safe throughout)
 handlers/chat.py        → message relay via services/relay.py + fire-and-forget logging
+                          panel input interception before relay
 handlers/session.py     → match notify, end chat (double-execution guard), feedback
 handlers/stop.py        → /stop
-handlers/admin.py       → /stats /user /ban /unban /broadcast (concurrent + progress)
+handlers/admin.py       → /stats /user /ban /unban /broadcast (permission-gated)
+handlers/panel.py       → Owner & Admin in-bot panel (/panel command + callbacks)
+                          user management, broadcasts, admin CRUD, permission editor,
+                          reports viewer, queue monitor — all via inline buttons
 handlers/errors.py      → 3-tier error classification (silent/transient/bug)
 ```
+
+---
+
+## Owner & Admin Panel System
+
+### Roles
+- **Owner** (ADMIN_IDS in .env): Full access to everything + can manage admins
+- **Admin** (added via panel): Permission-gated access, managed by owners
+
+### Permissions (granular, per-admin)
+| Key | Label | Grants |
+|-----|-------|--------|
+| `stats` | 📊 Stats | View live dashboard |
+| `user_lookup` | 👤 Lookup | Look up user profiles |
+| `ban` | 🔨 Ban | Ban users |
+| `unban` | 🔓 Unban | Unban users |
+| `broadcast` | 📢 Broadcast | Send broadcasts |
+| `view_reports` | 📋 Reports | View abuse reports |
+| `manage_search` | 🔍 Queue | View search queue & active chats |
+
+### Panel UX Flow
+1. `/panel` → Owner sees full panel, Admin sees permission-gated panel
+2. Inline button navigation for all actions
+3. Text input mode for user IDs and broadcast messages (via `user_data["panel_await"]`)
+4. Permission editor with toggle buttons (✅/❌)
+5. Panel input intercepted in `chat.py` before message relay
 
 ---
 
@@ -81,7 +111,9 @@ handlers/errors.py      → 3-tier error classification (silent/transient/bug)
 
 **blocks** — user_id + blocked_id (compound unique), blocked_id indexed for reverse lookup
 
-**reports** — reporter_id, reported_id, session_id, reason, created_at
+**reports** — reporter_id, reported_id, session_id, reason, created_at (indexed for sorting)
+
+**admins** — user_id (unique), permissions (list of permission keys), added_by, created_at, updated_at
 
 ### Indexes (created on connect)
 
