@@ -11,9 +11,9 @@ import asyncio
 import logging
 from typing import Any
 
-from telegram import Chat, InlineKeyboardMarkup, User
+from telegram import Chat, InlineKeyboardMarkup, Message, User
 from telegram.error import BadRequest, Forbidden, RetryAfter, TelegramError
-from telegram.ext import ContextTypes
+from telegram.ext import Application, ContextTypes
 
 from database import Database
 from keyboards.buttons import main_menu_keyboard, rules_keyboard
@@ -29,6 +29,50 @@ from utils.texts import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _get_app(context) -> Application:
+    """Resolve Application from either Application or CallbackContext.
+
+    bot.py passes Application directly to notify_matched/safe_send,
+    while handlers pass CallbackContext which has .application.
+    """
+    if isinstance(context, Application):
+        return context
+    return context.application
+
+
+def get_message_type(msg: Message) -> str:
+    """Determine message content type — compatible with all PTB versions."""
+    if msg.text is not None:
+        return "text"
+    if msg.photo:
+        return "photo"
+    if msg.animation:
+        return "animation"
+    if msg.video:
+        return "video"
+    if msg.voice:
+        return "voice"
+    if msg.video_note:
+        return "video_note"
+    if msg.audio:
+        return "audio"
+    if msg.document:
+        return "document"
+    if msg.sticker:
+        return "sticker"
+    if msg.contact:
+        return "contact"
+    if msg.location:
+        return "location"
+    if msg.dice:
+        return "dice"
+    if msg.poll:
+        return "poll"
+    if msg.venue:
+        return "venue"
+    return "unknown"
 
 
 def chat_to_user(chat: Chat) -> User:
@@ -73,7 +117,8 @@ async def safe_send(
     """Send message with 3-retry, RetryAfter backoff, and graceful Forbidden handling."""
     for attempt in range(3):
         try:
-            await context.bot.send_message(
+            bot = _get_app(context).bot
+            await bot.send_message(
                 chat_id, text, parse_mode=parse_mode, reply_markup=reply_markup
             )
             return True
@@ -185,15 +230,17 @@ async def is_banned(db: Database, user_id: int) -> bool:
 
 
 def track_search_card(
-    context: ContextTypes.DEFAULT_TYPE,
+    context,
     user_id: int,
     chat_id: int,
     message_id: int,
 ) -> None:
-    cards: dict = context.application.bot_data.setdefault("search_cards", {})
+    app = _get_app(context)
+    cards: dict = app.bot_data.setdefault("search_cards", {})
     cards[user_id] = (chat_id, message_id)
 
 
-def untrack_search_card(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
-    cards: dict = context.application.bot_data.get("search_cards", {})
+def untrack_search_card(context, user_id: int) -> None:
+    app = _get_app(context)
+    cards: dict = app.bot_data.get("search_cards", {})
     cards.pop(user_id, None)

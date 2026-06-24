@@ -16,13 +16,11 @@ from telegram.ext import ContextTypes
 
 from database import Database
 from handlers.session import end_chat
+from utils.helpers import get_message_type
 
 logger = logging.getLogger(__name__)
 
 
-def _message_type(message: Message) -> str:
-    raw = message.content_type
-    return raw.value if hasattr(raw, "value") else str(raw)
 
 
 async def copy_to_partner(
@@ -74,10 +72,11 @@ async def relay_chat_message(
     Returns (ok, error_text). Never raises.
     """
     content = message.text or message.caption
-    if content is None and message.content_type == "text":
+    msg_type = get_message_type(message)
+    if content is None and msg_type == "text":
         content = ""
     if content is None:
-        content = f"[{_message_type(message)}]"
+        content = f"[{msg_type}]"
 
     if len(content) > max_length:
         return False, f"⚠️ Message too long (max {max_length} chars)."

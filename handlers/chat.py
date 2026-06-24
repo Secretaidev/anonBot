@@ -19,7 +19,7 @@ from database import Database
 from handlers.session import end_chat
 from services.logger import log_to_channel_bg
 from services.relay import copy_to_partner
-from utils.helpers import home_screen, is_banned, is_valid_chat_session
+from utils.helpers import get_message_type, home_screen, is_banned, is_valid_chat_session
 from utils.ratelimit import RateLimiter
 from utils.texts import BANNED, RATE_LIMITED, REPORT_SENT
 
@@ -94,7 +94,8 @@ async def relay_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     msg = update.message
-    content = msg.text or msg.caption or f"[{msg.content_type}]"
+    msg_type = get_message_type(msg)
+    content = msg.text or msg.caption or f"[{msg_type}]"
 
     if len(content) > config.max_message_length:
         await update.message.reply_text(
@@ -121,7 +122,7 @@ async def relay_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 user=user,
                 partner=None,
                 session_id=session_id,
-                message_type=msg.content_type,
+                message_type=msg_type,
                 content=content,
                 extra=f"Partner ID: {partner_id}",
                 persist_message=False,
@@ -133,7 +134,7 @@ async def relay_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 session_id=session_id,
                 sender_id=user.id,
                 receiver_id=partner_id,
-                message_type=msg.content_type,
+                message_type=msg_type,
                 content=content,
             )
         )
