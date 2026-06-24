@@ -1,10 +1,11 @@
-"""Premium inline keyboards — primary=blue, success=green, danger=red.
+"""Premium inline keyboards — clean, minimal, professional.
 
-Includes:
-  • User-facing keyboards (menu, settings, feedback, etc.)
-  • Owner Panel keyboards (full control)
-  • Admin Panel keyboards (permission-gated)
-  • Permission editor with toggle buttons
+Regular users see ONLY what they need:
+  • Idle: Find Partner + Settings
+  • Searching: Cancel
+  • Chatting: End/Next + Report/Block
+
+Stats, Help, Admin tools are ONLY in /panel.
 """
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -81,7 +82,9 @@ def _btn(text: str, data: str, *, style: str | None = None) -> InlineKeyboardBut
     return InlineKeyboardButton(text, callback_data=data, style=style)
 
 
-# ── User keyboards ──
+# ═══════════════════════════════════════════════════════════════
+# User keyboards — clean, minimal, professional
+# ═══════════════════════════════════════════════════════════════
 
 def rules_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
@@ -90,49 +93,41 @@ def rules_keyboard() -> InlineKeyboardMarkup:
 
 
 def gender_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
+    return InlineKeyboardMarkup([
         [
-            [
-                _btn("👨 Male", f"{CB_GENDER}{GENDER_MALE}", style=S.PRIMARY),
-                _btn("👩 Female", f"{CB_GENDER}{GENDER_FEMALE}", style=S.PRIMARY),
-            ],
-            [_btn("🌈 Other", f"{CB_GENDER}{GENDER_OTHER}", style=S.PRIMARY)],
-        ]
-    )
+            _btn("👨 Male", f"{CB_GENDER}{GENDER_MALE}", style=S.PRIMARY),
+            _btn("👩 Female", f"{CB_GENDER}{GENDER_FEMALE}", style=S.PRIMARY),
+        ],
+        [_btn("🌈 Other", f"{CB_GENDER}{GENDER_OTHER}", style=S.PRIMARY)],
+    ])
 
 
 def looking_for_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
+    return InlineKeyboardMarkup([
         [
-            [
-                _btn("👨 Boys", f"{CB_LOOKING}{LOOK_MALE}", style=S.PRIMARY),
-                _btn("👩 Girls", f"{CB_LOOKING}{LOOK_FEMALE}", style=S.PRIMARY),
-            ],
-            [_btn("🌍 Anyone", f"{CB_LOOKING}{LOOK_ANY}", style=S.SUCCESS)],
-            [_btn("⬅️ Back", f"{CB_ACTION}{ACT_BACK}", style=S.PRIMARY)],
-        ]
-    )
+            _btn("👨 Boys", f"{CB_LOOKING}{LOOK_MALE}", style=S.PRIMARY),
+            _btn("👩 Girls", f"{CB_LOOKING}{LOOK_FEMALE}", style=S.PRIMARY),
+        ],
+        [_btn("🌍 Anyone", f"{CB_LOOKING}{LOOK_ANY}", style=S.SUCCESS)],
+    ])
 
 
 def main_menu_keyboard(
     is_searching: bool = False,
     is_chatting: bool = False,
 ) -> InlineKeyboardMarkup:
+    """Clean main menu — users see ONLY what they need."""
     rows: list[list[InlineKeyboardButton]] = []
 
     if is_chatting:
-        rows.append(
-            [
-                _btn("🔴 End Chat", f"{CB_ACTION}{ACT_END_CHAT}", style=S.DANGER),
-                _btn("⏭ Next", f"{CB_ACTION}{ACT_NEXT}", style=S.PRIMARY),
-            ]
-        )
-        rows.append(
-            [
-                _btn("🚨 Report", f"{CB_ACTION}{ACT_REPORT}", style=S.DANGER),
-                _btn("🚫 Block", f"{CB_ACTION}{ACT_BLOCK}", style=S.DANGER),
-            ]
-        )
+        rows.append([
+            _btn("🔴 End Chat", f"{CB_ACTION}{ACT_END_CHAT}", style=S.DANGER),
+            _btn("⏭ Next", f"{CB_ACTION}{ACT_NEXT}", style=S.PRIMARY),
+        ])
+        rows.append([
+            _btn("🚨 Report", f"{CB_ACTION}{ACT_REPORT}", style=S.DANGER),
+            _btn("🚫 Block", f"{CB_ACTION}{ACT_BLOCK}", style=S.DANGER),
+        ])
     elif is_searching:
         rows.append(
             [_btn("🛑 Cancel Search", f"{CB_ACTION}{ACT_STOP_SEARCH}", style=S.DANGER)]
@@ -141,65 +136,52 @@ def main_menu_keyboard(
         rows.append(
             [_btn("🔍 Find Partner", f"{CB_ACTION}{ACT_FIND}", style=S.PRIMARY)]
         )
-
-    rows.append(
-        [
-            _btn("⚙️ Settings", f"{CB_ACTION}{ACT_SETTINGS}", style=S.PRIMARY),
-            _btn("📊 Stats", f"{CB_ACTION}{ACT_STATS}", style=S.SUCCESS),
-        ]
-    )
-    rows.append([_btn("❓ Help", f"{CB_ACTION}{ACT_HELP}", style=S.SUCCESS)])
+        rows.append(
+            [_btn("⚙️ Settings", f"{CB_ACTION}{ACT_SETTINGS}", style=S.PRIMARY)]
+        )
 
     return InlineKeyboardMarkup(rows)
 
 
 def settings_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [_btn("🎭 Change Gender", f"{CB_ACTION}{ACT_CHANGE_GENDER}", style=S.PRIMARY)],
-            [_btn("💫 Change Preference", f"{CB_ACTION}{ACT_CHANGE_LOOKING}", style=S.PRIMARY)],
-            [_btn("🏠 Main Menu", f"{CB_ACTION}{ACT_BACK}", style=S.SUCCESS)],
-        ]
-    )
+    return InlineKeyboardMarkup([
+        [_btn("🎭 Change Gender", f"{CB_ACTION}{ACT_CHANGE_GENDER}", style=S.PRIMARY)],
+        [_btn("💫 Change Preference", f"{CB_ACTION}{ACT_CHANGE_LOOKING}", style=S.PRIMARY)],
+        [_btn("⬅️ Back", f"{CB_ACTION}{ACT_BACK}", style=S.PRIMARY)],
+    ])
 
 
 def confirm_end_chat_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
+    return InlineKeyboardMarkup([
         [
-            [
-                _btn("✅ Yes, End Chat", f"{CB_ACTION}{ACT_END_CHAT}:confirm", style=S.DANGER),
-                _btn("❌ Cancel", f"{CB_ACTION}{ACT_BACK}", style=S.SUCCESS),
-            ]
+            _btn("✅ Yes, End Chat", f"{CB_ACTION}{ACT_END_CHAT}:confirm", style=S.DANGER),
+            _btn("❌ Cancel", f"{CB_ACTION}{ACT_BACK}", style=S.SUCCESS),
         ]
-    )
+    ])
 
 
 def report_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
+    return InlineKeyboardMarkup([
         [
-            [
-                _btn("🚨 Submit Report", f"{CB_ACTION}{ACT_REPORT_CONFIRM}", style=S.DANGER),
-                _btn("❌ Cancel", f"{CB_ACTION}{ACT_BACK}", style=S.PRIMARY),
-            ]
+            _btn("🚨 Submit Report", f"{CB_ACTION}{ACT_REPORT_CONFIRM}", style=S.DANGER),
+            _btn("❌ Cancel", f"{CB_ACTION}{ACT_BACK}", style=S.PRIMARY),
         ]
-    )
+    ])
 
 
 def feedback_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
+    return InlineKeyboardMarkup([
         [
-            [
-                _btn("⭐", f"{CB_RATE}1", style=S.PRIMARY),
-                _btn("⭐⭐", f"{CB_RATE}2", style=S.PRIMARY),
-                _btn("⭐⭐⭐", f"{CB_RATE}3", style=S.SUCCESS),
-            ],
-            [
-                _btn("⭐⭐⭐⭐", f"{CB_RATE}4", style=S.SUCCESS),
-                _btn("⭐⭐⭐⭐⭐", f"{CB_RATE}5", style=S.SUCCESS),
-            ],
-            [_btn("Skip", f"{CB_ACTION}{ACT_SKIP_FEEDBACK}", style=S.DANGER)],
-        ]
-    )
+            _btn("⭐", f"{CB_RATE}1", style=S.PRIMARY),
+            _btn("⭐⭐", f"{CB_RATE}2", style=S.PRIMARY),
+            _btn("⭐⭐⭐", f"{CB_RATE}3", style=S.SUCCESS),
+        ],
+        [
+            _btn("⭐⭐⭐⭐", f"{CB_RATE}4", style=S.SUCCESS),
+            _btn("⭐⭐⭐⭐⭐", f"{CB_RATE}5", style=S.SUCCESS),
+        ],
+        [_btn("Skip", f"{CB_ACTION}{ACT_SKIP_FEEDBACK}", style=S.DANGER)],
+    ])
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -207,12 +189,10 @@ def feedback_keyboard() -> InlineKeyboardMarkup:
 # ═══════════════════════════════════════════════════════════════
 
 def _pbtn(text: str, action: str, *, style: str | None = None) -> InlineKeyboardButton:
-    """Panel button — prefixed with p:"""
     return _btn(text, f"{CB_PANEL}{action}", style=style)
 
 
 def owner_panel_keyboard() -> InlineKeyboardMarkup:
-    """Full owner panel — all actions available."""
     return InlineKeyboardMarkup([
         [
             _pbtn("📊 Live Stats", PA_STATS, style=S.SUCCESS),
@@ -231,7 +211,6 @@ def owner_panel_keyboard() -> InlineKeyboardMarkup:
 
 
 def admin_panel_keyboard(permissions: list[str]) -> InlineKeyboardMarkup:
-    """Permission-gated admin panel — only shows what admin can do."""
     rows: list[list[InlineKeyboardButton]] = []
 
     row1 = []
@@ -266,7 +245,6 @@ def admin_panel_keyboard(permissions: list[str]) -> InlineKeyboardMarkup:
 
 
 def user_management_keyboard() -> InlineKeyboardMarkup:
-    """User management sub-menu."""
     return InlineKeyboardMarkup([
         [_pbtn("👤 Lookup User", PA_USER_LOOKUP, style=S.PRIMARY)],
         [
@@ -281,12 +259,11 @@ def admin_list_keyboard(
     admins: list[dict],
     owner_ids: frozenset[int],
 ) -> InlineKeyboardMarkup:
-    """List of admins with edit/remove buttons."""
     rows: list[list[InlineKeyboardButton]] = []
     for adm in admins:
         uid = adm["user_id"]
         if uid in owner_ids:
-            continue  # don't show owners in admin list
+            continue
         perms = adm.get("permissions", [])
         label = f"👮 {uid} ({len(perms)} perms)"
         rows.append([
@@ -303,7 +280,6 @@ def permission_editor_keyboard(
     target_uid: int,
     current_perms: list[str],
 ) -> InlineKeyboardMarkup:
-    """Toggle grid — each permission shows ✅ or ❌."""
     rows: list[list[InlineKeyboardButton]] = []
     for perm_key, perm_label in ALL_PERMISSIONS:
         is_on = perm_key in current_perms

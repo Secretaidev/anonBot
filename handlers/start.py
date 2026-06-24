@@ -1,7 +1,6 @@
 """Handler for /start and /menu commands.
 
-Uses cached DB reads where safe (is_banned) and fresh reads only
-where state correctness matters (home_screen, setup flow).
+Speed: fire-and-forget logging, no blocking on channel log.
 """
 
 from telegram import Update
@@ -10,7 +9,7 @@ from telegram.ext import ContextTypes
 from config import Config
 from database import Database
 from keyboards.buttons import gender_keyboard, looking_for_keyboard, rules_keyboard
-from services.logger import log_to_channel
+from services.logger import log_to_channel_bg
 from services.matcher import Matcher
 from utils.helpers import home_screen, is_banned
 from utils.texts import BANNED, SETUP_GENDER, SETUP_LOOKING, WELCOME
@@ -33,7 +32,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     record = await db.get_user(user.id, fresh=True)
 
-    await log_to_channel(
+    # Fire-and-forget — don't block the /start response
+    log_to_channel_bg(
         context,
         config.log_channel_id,
         db,
@@ -62,14 +62,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
         return
 
-    stats_cache = context.application.bot_data.get("stats_cache")
-    stats = None
-    if stats_cache:
-        stats = await stats_cache.get(db.get_stats)
-
-    text, keyboard = await home_screen(
-        db, matcher, user.id, brand=config.brand_name, stats=stats
-    )
+    text, keyboard = await home_screen(db, matcher, user.id, brand=config.brand_name)
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
 
 
@@ -91,12 +84,5 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await start_command(update, context)
         return
 
-    stats_cache = context.application.bot_data.get("stats_cache")
-    stats = None
-    if stats_cache:
-        stats = await stats_cache.get(db.get_stats)
-
-    text, keyboard = await home_screen(
-        db, matcher, user.id, brand=config.brand_name, stats=stats
-    )
+    text, keyboard = await home_screen(db, matcher, user.id, brand=config.brand_name)
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)

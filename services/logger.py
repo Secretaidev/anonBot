@@ -47,7 +47,7 @@ async def log_to_channel(
     db: Database,
     *,
     event: str,
-    user: User,
+    user: User | None = None,
     partner: User | None = None,
     session_id: str | None = None,
     message_type: str | None = None,
@@ -57,23 +57,26 @@ async def log_to_channel(
 ) -> None:
     """Send structured HTML log to admin channel. Never raises."""
     try:
-        name = _s(display_name(user))
-        username = f"@{_s(user.username)}" if user.username else "—"
-        link = profile_link(user)
-        is_premium = "⭐ Yes" if getattr(user, "is_premium", False) else "No"
-        lang = getattr(user, "language_code", None) or "—"
-
         lines = [
             f"<b>📋 Event</b>  {_s(event)}",
             f"<b>🕐 Time</b>  {format_time()}",
             "━━━━━━━━━━━━━━━━━━━━",
-            f"<b>🆔 User ID</b>  <code>{user.id}</code>",
-            f"<b>📛 Name</b>  {name}",
-            f"<b>🏷 Username</b>  {username}",
-            f'<b>🔗 Profile</b>  <a href="{link}">Open</a>',
-            f"<b>🌐 Language</b>  {_s(lang)}",
-            f"<b>💎 Premium</b>  {is_premium}",
         ]
+
+        if user:
+            name = _s(display_name(user))
+            username = f"@{_s(user.username)}" if user.username else "—"
+            link = profile_link(user)
+            is_premium = "⭐ Yes" if getattr(user, "is_premium", False) else "No"
+            lang = getattr(user, "language_code", None) or "—"
+            lines.extend([
+                f"<b>🆔 User ID</b>  <code>{user.id}</code>",
+                f"<b>📛 Name</b>  {name}",
+                f"<b>🏷 Username</b>  {username}",
+                f'<b>🔗 Profile</b>  <a href="{link}">Open</a>',
+                f"<b>🌐 Language</b>  {_s(lang)}",
+                f"<b>💎 Premium</b>  {is_premium}",
+            ])
 
         if session_id:
             lines.append(f"<b>🔑 Session</b>  <code>{_s(session_id)}</code>")
@@ -81,33 +84,27 @@ async def log_to_channel(
         if partner:
             p_name = _s(display_name(partner))
             p_user = f"@{_s(partner.username)}" if partner.username else "—"
-            lines.extend(
-                [
-                    "━━━━━━━━━━━━━━━━━━━━",
-                    f"<b>🤝 Partner ID</b>  <code>{partner.id}</code>",
-                    f"<b>🤝 Partner</b>  {p_name} ({p_user})",
-                    f'<b>🔗 Partner</b>  <a href="{profile_link(partner)}">Open</a>',
-                ]
-            )
+            lines.extend([
+                "━━━━━━━━━━━━━━━━━━━━",
+                f"<b>🤝 Partner ID</b>  <code>{partner.id}</code>",
+                f"<b>🤝 Partner</b>  {p_name} ({p_user})",
+                f'<b>🔗 Partner</b>  <a href="{profile_link(partner)}">Open</a>',
+            ])
 
         if message_type and content is not None:
             preview = _s(content[:400])
             if len(content) > 400:
                 preview += "…"
-            lines.extend(
-                [
-                    "━━━━━━━━━━━━━━━━━━━━",
-                    f"<b>💬 Type</b>  {_s(message_type)}",
-                    f"<b>📝 Content</b>\n{preview}",
-                ]
-            )
+            lines.extend([
+                "━━━━━━━━━━━━━━━━━━━━",
+                f"<b>💬 Type</b>  {_s(message_type)}",
+                f"<b>📝 Content</b>\n{preview}",
+            ])
 
         if extra:
             lines.extend(["━━━━━━━━━━━━━━━━━━━━", _s(extra)])
 
         text = "\n".join(lines)
-
-        # Safety: truncate if exceeds Telegram limit
         if len(text) > _MAX_LOG_LENGTH:
             text = text[:_MAX_LOG_LENGTH] + "\n…[truncated]"
 
@@ -120,7 +117,7 @@ async def log_to_channel(
     except Exception as exc:
         logger.warning("log channel send failed: %s", exc)
 
-    if persist_message and session_id and message_type and content is not None:
+    if persist_message and session_id and message_type and content is not None and user:
         try:
             await db.log_message(
                 session_id=session_id,

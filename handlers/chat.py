@@ -1,11 +1,10 @@
-"""Message relay handler — routes user messages to their chat partner.
+"""Message relay — fastest possible hot path.
 
-Improvements over original:
-  • Uses services/relay.py (copy_to_partner) with 3-retry + RetryAfter backoff
-    (was: raw msg.copy() with no retry, no Forbidden handling)
-  • Fire-and-forget tasks have proper error callbacks (no silent exception loss)
-  • Conditional message logging via config.log_chat_messages
-  • Rate limiter is now synchronous (no await overhead)
+Hot-path optimizations:
+  • Single get_user() for ban+state+partner check (was 3 separate)
+  • Zero-await rate limiter
+  • Fire-and-forget for ALL logging (channel + DB)
+  • Panel interception only checked if panel_await is set
 """
 
 import asyncio
@@ -16,18 +15,18 @@ from telegram.ext import ContextTypes
 
 from config import Config
 from database import Database
+from handlers.panel import handle_panel_input
 from handlers.session import end_chat
 from services.logger import log_to_channel_bg
 from services.relay import copy_to_partner
-from utils.helpers import get_message_type, home_screen, is_banned, is_valid_chat_session
+from utils.helpers import get_message_type
 from utils.ratelimit import RateLimiter
-from utils.texts import BANNED, RATE_LIMITED, REPORT_SENT
+from utils.texts import BANNED, NOT_IN_CHAT, RATE_LIMITED, REPORT_SENT
 
 logger = logging.getLogger(__name__)
 
 
 def _task_error_cb(task: asyncio.Task) -> None:
-    """Log exceptions from fire-and-forget tasks."""
     if task.cancelled():
         return
     exc = task.exception()
@@ -35,68 +34,40 @@ def _task_error_cb(task: asyncio.Task) -> None:
         logger.debug("background task failed: %s", exc)
 
 
-async def _persist_message_log(
-    db: Database,
-    *,
-    session_id: str,
-    sender_id: int,
-    receiver_id: int,
-    message_type: str,
-    content: str,
-) -> None:
-    try:
-        await db.log_message(
-            session_id=session_id,
-            sender_id=sender_id,
-            receiver_id=receiver_id,
-            message_type=message_type,
-            content_preview=content,
-        )
-    except Exception as exc:
-        logger.debug("async log_message failed: %s", exc)
-
-
 async def relay_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_user or not update.message:
         return
 
-    # ── Panel input interception ──
-    # When admin is entering a user ID / broadcast message, consume it here
-    from handlers.panel import handle_panel_input
-    if await handle_panel_input(update, context):
-        return
+    # ── Panel input — only check if a panel flow is pending ──
+    if context.user_data.get("panel_await"):
+        if await handle_panel_input(update, context):
+            return
 
     user = update.effective_user
     db: Database = context.bot_data["db"]
     config: Config = context.bot_data["config"]
     limiter: RateLimiter = context.bot_data["rate_limiter"]
 
-    if await is_banned(db, user.id):
+    # ── Single DB read for ban + state + partner (was 3 reads) ──
+    record = await db.get_user(user.id)
+    if not record:
+        return
+
+    if record.get("is_banned"):
         await update.message.reply_text(BANNED, parse_mode="HTML")
         return
 
-    # Cached read on hot path — no fresh DB hit per message
-    if not await is_valid_chat_session(db, user.id):
-        matcher = context.bot_data["matcher"]
-        stats_cache = context.application.bot_data.get("stats_cache")
-        stats = None
-        if stats_cache:
-            stats = await stats_cache.get(db.get_stats)
-        text, keyboard = await home_screen(
-            db, matcher, user.id, brand=config.brand_name, stats=stats
-        )
-        await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
+    state = record.get("state")
+    partner_id = record.get("partner_id")
+    session_id = record.get("session_id")
+
+    if state != "chatting" or not partner_id:
+        await update.message.reply_text(NOT_IN_CHAT, parse_mode="HTML")
         return
 
-    # Synchronous rate limiter — zero await overhead
+    # Synchronous rate limiter — zero await
     if not limiter.allow(user.id):
         await update.message.reply_text(RATE_LIMITED, parse_mode="HTML")
-        return
-
-    record = await db.get_user(user.id)
-    partner_id = record.get("partner_id") if record else None
-    session_id = record.get("session_id") if record else None
-    if not partner_id:
         return
 
     msg = update.message
@@ -109,7 +80,7 @@ async def relay_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
         return
 
-    # ── Use relay service with proper retry/backoff ──
+    # ── Relay with retry/backoff ──
     ok = await copy_to_partner(context, msg, partner_id, sender_id=user.id)
     if not ok:
         logger.warning("relay failed %s -> %s", user.id, partner_id)
@@ -117,31 +88,30 @@ async def relay_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await end_chat(context, user.id, reason="partner_left")
         return
 
-    # ── Fire-and-forget logging (with error callbacks) ──
-    if session_id and config.log_channel_id:
-        if config.log_chat_messages:
-            log_to_channel_bg(
-                context,
-                config.log_channel_id,
-                db,
-                event="💬 Message",
-                user=user,
-                partner=None,
-                session_id=session_id,
-                message_type=msg_type,
-                content=content,
-                extra=f"Partner ID: {partner_id}",
-                persist_message=False,
-            )
+    # ── Fire-and-forget logging — ZERO blocking ──
+    if session_id and config.log_channel_id and config.log_chat_messages:
+        log_to_channel_bg(
+            context,
+            config.log_channel_id,
+            db,
+            event="💬 Message",
+            user=user,
+            partner=None,
+            session_id=session_id,
+            message_type=msg_type,
+            content=content,
+            extra=f"Partner ID: {partner_id}",
+            persist_message=False,
+        )
 
+    if session_id:
         task = asyncio.create_task(
-            _persist_message_log(
-                db,
+            db.log_message(
                 session_id=session_id,
                 sender_id=user.id,
                 receiver_id=partner_id,
                 message_type=msg_type,
-                content=content,
+                content_preview=content[:500],
             )
         )
         task.add_done_callback(_task_error_cb)
@@ -169,7 +139,10 @@ async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         except Exception:
             pass
 
-    await log_to_channel(
+    from services.logger import log_to_channel
+    from keyboards.buttons import main_menu_keyboard
+
+    log_to_channel_bg(
         context,
         config.log_channel_id,
         db,
@@ -180,9 +153,6 @@ async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         extra=f"Partner: {partner_id} | Reason: {reason}" if partner_id else f"Reason: {reason}",
         persist_message=False,
     )
-
-    from keyboards.buttons import main_menu_keyboard
-    from services.logger import log_to_channel
 
     await update.message.reply_text(
         REPORT_SENT,

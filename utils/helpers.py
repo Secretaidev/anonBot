@@ -181,13 +181,9 @@ async def home_screen(
         state = STATE_IDLE
 
     if state == STATE_SEARCHING:
-        pulse_idx = 0
-        pulse = PULSE_FRAMES[pulse_idx % len(PULSE_FRAMES)]
-        searching_count = stats.get("searching", 0) if stats else 0
-        chatting_count = stats.get("chatting", 0) if stats else 0
-        queue = max(searching_count, await matcher.queue_size())
+        pulse = PULSE_FRAMES[0]
         return (
-            SEARCHING.format(pulse=pulse, online=queue, chatting=chatting_count),
+            SEARCHING.format(pulse=pulse),
             main_menu_keyboard(is_searching=True),
         )
 
@@ -196,14 +192,10 @@ async def home_screen(
         from keyboards.buttons import gender_keyboard
         return SETUP_GENDER, gender_keyboard()
 
-    queue = await matcher.queue_size()
-    if stats:
-        queue = max(stats.get("searching", 0), queue)
     return (
         READY.format(
             gender=gender_label(gender),
             looking=looking_label(looking),
-            online=queue,
         ),
         main_menu_keyboard(),
     )

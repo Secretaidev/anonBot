@@ -1,9 +1,7 @@
-"""All inline button callback handlers — deduplicated, defensive, fast.
+"""All inline button callback handlers — clean, professional, no clutter.
 
-Improvements:
-  • Null-safe stats_cache access throughout
-  • Consistent use of safe_edit for all button responses
-  • Search screen helper exported for jobs.py
+Regular users: Find Partner, Settings, End/Next/Report/Block only.
+Stats/Help are NOT in the user flow — they're in /panel.
 """
 
 from telegram import Update
@@ -36,7 +34,6 @@ from keyboards.buttons import (
     looking_for_keyboard,
     main_menu_keyboard,
     report_keyboard,
-    rules_keyboard,
     settings_keyboard,
 )
 from services.logger import log_to_channel
@@ -46,7 +43,6 @@ from utils.helpers import (
     home_screen,
     is_banned,
     is_valid_chat_session,
-    menu_for_user,
     safe_edit,
     track_search_card,
     untrack_search_card,
@@ -56,6 +52,7 @@ from utils.texts import (
     CONFIRM_END,
     FEEDBACK_THANKS,
     HELP,
+    MATCHED,
     PARTNER_FOUND_HINT,
     READY,
     REPORT_PROMPT,
@@ -65,7 +62,6 @@ from utils.texts import (
     SETTINGS,
     SETUP_GENDER,
     SETUP_LOOKING,
-    STATS,
     WELCOME,
     gender_label,
     looking_label,
@@ -77,15 +73,11 @@ async def _search_screen(
     matcher: Matcher,
     stats: dict,
 ) -> str:
-    """Build the animated search screen text."""
+    """Build the animated search screen text — clean, no stats."""
     pulse_idx = context.application.bot_data.get("pulse_idx", 0)
     from utils.texts import PULSE_FRAMES
     pulse = PULSE_FRAMES[pulse_idx % len(PULSE_FRAMES)]
-    return SEARCHING.format(
-        pulse=pulse,
-        online=max(stats.get("searching", 0), await matcher.queue_size()),
-        chatting=stats.get("chatting", 0),
-    )
+    return SEARCHING.format(pulse=pulse)
 
 
 async def _start_search(
@@ -129,7 +121,6 @@ async def _start_search(
         await db.set_state(user_id, STATE_SEARCHING)
         await matcher.join(user_id, record["gender"], record["looking_for"])
 
-    # Null-safe stats_cache access
     stats = {}
     if stats_cache:
         stats = await stats_cache.get(context.bot_data["db"].get_stats)
@@ -208,13 +199,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         looking = data[len(CB_LOOKING):]
         await db.set_looking_for(user.id, looking)
         record = await db.get_user(user.id)
-        online = await matcher.queue_size()
         await safe_edit(
             query,
             READY.format(
                 gender=gender_label(record["gender"]),
                 looking=looking_label(looking),
-                online=online,
             ),
             reply_markup=main_menu_keyboard(),
         )
@@ -242,11 +231,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if action == ACT_SKIP_FEEDBACK:
         pending = context.application.bot_data.get("pending_feedback", {})
         pending.pop(user.id, None)
-        stats_cache = context.application.bot_data.get("stats_cache")
-        stats = await stats_cache.get(db.get_stats) if stats_cache else None
-        text, keyboard = await home_screen(
-            db, matcher, user.id, brand=config.brand_name, stats=stats
-        )
+        text, keyboard = await home_screen(db, matcher, user.id, brand=config.brand_name)
         await safe_edit(query, text, reply_markup=keyboard)
         return
 
@@ -323,7 +308,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             await end_chat(context, user.id, reason="blocked", notify_initiator=False)
             await safe_edit(
                 query,
-                "🚫 Partner blocked. They won't be matched with you again.",
+                "🚫 Partner blocked.",
                 reply_markup=main_menu_keyboard(),
             )
             await log_to_channel(
@@ -353,36 +338,14 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await safe_edit(query, SETUP_LOOKING, reply_markup=looking_for_keyboard())
         return
 
-    if action == ACT_STATS:
-        stats_cache = context.application.bot_data.get("stats_cache")
-        stats = await stats_cache.get(db.get_stats) if stats_cache else await db.get_stats()
-        queue = await matcher.queue_size()
-        record = await db.get_user(user.id)
-        await safe_edit(
-            query,
-            STATS.format(
-                users=stats["users"],
-                searching=stats["searching"],
-                chatting=stats["chatting"],
-                sessions=stats["sessions"],
-                queue=queue,
-                banned=stats["banned"],
-                my_sessions=record.get("total_sessions", 0) if record else 0,
-                my_messages=record.get("total_messages", 0) if record else 0,
-            ),
-            reply_markup=await menu_for_user(db, user.id),
-        )
-        return
-
-    if action == ACT_HELP:
-        await safe_edit(query, HELP, reply_markup=await menu_for_user(db, user.id))
-        return
-
+    # ── Back to home screen ──
     if action == ACT_BACK:
-        stats_cache = context.application.bot_data.get("stats_cache")
-        stats = await stats_cache.get(db.get_stats) if stats_cache else None
-        text, keyboard = await home_screen(
-            db, matcher, user.id, brand=config.brand_name, stats=stats
-        )
+        text, keyboard = await home_screen(db, matcher, user.id, brand=config.brand_name)
+        await safe_edit(query, text, reply_markup=keyboard)
+        return
+
+    # Stats/Help kept as fallback (accessible via old deep links or /stats command)
+    if action == ACT_STATS or action == ACT_HELP:
+        text, keyboard = await home_screen(db, matcher, user.id, brand=config.brand_name)
         await safe_edit(query, text, reply_markup=keyboard)
         return
