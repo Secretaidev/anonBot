@@ -25,6 +25,8 @@ class Config:
     brand_name: str
     auto_ban_reports: int
     log_chat_messages: bool
+    broadcast_concurrency: int
+    flood_notify_cooldown: int
 
 
 def load_config() -> Config:
@@ -60,4 +62,7 @@ def load_config() -> Config:
         rate_limit_per_minute=int(os.getenv("RATE_LIMIT_PER_MINUTE", "25")),
         brand_name=os.getenv("BRAND_NAME", "AnoyBot"),
         auto_ban_reports=int(os.getenv("AUTO_BAN_REPORTS", "3")),
+        log_chat_messages=os.getenv("LOG_CHAT_MESSAGES", "true").strip().lower() in ("1", "true", "yes"),
+        broadcast_concurrency=int(os.getenv("BROADCAST_CONCURRENCY", "20")),
+        flood_notify_cooldown=int(os.getenv("FLOOD_NOTIFY_COOLDOWN", "30")),
     )

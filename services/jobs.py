@@ -1,3 +1,12 @@
+"""Background jobs — search pulse animation, startup notify, bot commands.
+
+Performance improvements:
+  • search_pulse_job: batch user state check via single $in query
+    (was: N individual get_user calls per pulse tick)
+  • Stale card auto-cleanup
+  • Startup notification with graceful error handling
+"""
+
 import logging
 
 from telegram import BotCommand
@@ -45,6 +54,11 @@ async def notify_startup(application: Application) -> None:
 
 
 async def search_pulse_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Animate search screens for waiting users.
+
+    Optimization: batch-fetch user states in one $in query instead
+    of N individual get_user() calls.
+    """
     app = context.application
     db: Database = app.bot_data["db"]
     matcher: Matcher = app.bot_data["matcher"]
@@ -59,12 +73,18 @@ async def search_pulse_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
     from keyboards.buttons import main_menu_keyboard
 
+    # Batch fetch all user states in one query
+    user_ids = list(cards.keys())
+    user_states = await db.get_users_by_ids(user_ids)
+
     stale: list[int] = []
-    for uid, (chat_id, msg_id) in list(cards.items()):
-        record = await db.get_user(uid)
+    for uid in user_ids:
+        record = user_states.get(uid)
         if not record or record.get("state") != STATE_SEARCHING:
             stale.append(uid)
             continue
+
+        chat_id, msg_id = cards[uid]
         try:
             await app.bot.edit_message_text(
                 text,

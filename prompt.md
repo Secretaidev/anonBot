@@ -1,4 +1,4 @@
-# AnoyBot — Master AI Prompt
+# AnoyBot — Master AI Prompt (v2)
 
 Use this when extending, fixing, or rebuilding this Telegram anonymous chat bot. Target: **world-class production bot** — zero errors, minimal server load, premium UX, MongoDB persistence.
 
@@ -23,10 +23,17 @@ ADMIN_IDS=               # comma-separated Telegram user ids
 MONGODB_URL=             # mongodb://localhost:27017 or Atlas URI
 MONGODB_DB_NAME=anoybot
 MATCH_TIMEOUT_SECONDS=300
+MATCH_WIDEN_SECONDS=90
+SEARCH_PULSE_SECONDS=25
+STATS_CACHE_SECONDS=30
+USER_CACHE_SECONDS=8
 MAX_MESSAGE_LENGTH=4096
 RATE_LIMIT_PER_MINUTE=25
 BRAND_NAME=AnoyBot
 AUTO_BAN_REPORTS=3
+LOG_CHAT_MESSAGES=true
+BROADCAST_CONCURRENCY=20
+FLOOD_NOTIFY_COOLDOWN=30
 ```
 
 ---
@@ -34,23 +41,32 @@ AUTO_BAN_REPORTS=3
 ## Architecture
 
 ```
-bot.py                  → entry, job queue, handler registration
-config.py               → env Config dataclass
-database.py             → MongoDB via motor (users, sessions, logs, blocks, reports)
+bot.py                  → entry, job queue, handler registration, graceful shutdown
+config.py               → env Config dataclass (all fields populated, no crashes)
+database.py             → MongoDB via motor — compound indexes, $facet stats, TTL logs,
+                          parallel writes, cache GC, batch user fetch
 services/matcher.py     → in-memory match queue, bucket hints, timeout sweep
-services/logger.py      → HTML logs to private channel + MongoDB message_logs
-services/jobs.py        → search pulse animation, startup notify, bot commands
+                          DB reads OUTSIDE lock, match callback outside lock
+services/logger.py      → HTML logs to channel + MongoDB persistence
+                          log_to_channel_bg() for fire-and-forget on hot paths
+                          Message length truncation (4000 char safety)
+services/relay.py       → 3-retry copy_to_partner with RetryAfter, Forbidden handling
+services/jobs.py        → search pulse with batch $in user fetch (N→1 DB calls)
+services/stats_cache.py → TTL cache with jitter + stale-while-revalidate
 keyboards/buttons.py    → ALL inline keyboards (styled: blue/green/red)
 utils/texts.py          → ALL user-facing strings
 utils/helpers.py        → safe_send, safe_edit, search card tracking
-utils/ratelimit.py      → per-user sliding window limiter
+                          is_banned() uses cached reads (no fresh hit per msg)
+                          is_valid_chat_session() cached on relay, fresh on mutations
+utils/ratelimit.py      → deque-based sliding window, periodic GC, zero-lock sync
+utils/mongo.py          → normalize MongoDB connection URL
 handlers/start.py       → /start, /menu
-handlers/callbacks.py   → all button callbacks + star ratings
-handlers/chat.py        → message relay, /report
-handlers/session.py     → match notify, end chat, feedback
+handlers/callbacks.py   → all button callbacks + star ratings (null-safe throughout)
+handlers/chat.py        → message relay via services/relay.py + fire-and-forget logging
+handlers/session.py     → match notify, end chat (double-execution guard), feedback
 handlers/stop.py        → /stop
-handlers/admin.py       → /stats /user /ban /unban /broadcast
-handlers/errors.py      → global error handler
+handlers/admin.py       → /stats /user /ban /unban /broadcast (concurrent + progress)
+handlers/errors.py      → 3-tier error classification (silent/transient/bug)
 ```
 
 ---
@@ -61,13 +77,53 @@ handlers/errors.py      → global error handler
 
 **sessions** — session_id (unique), user_a_id, user_b_id, started_at, ended_at, message_count, rating_a, rating_b
 
-**message_logs** — session_id, sender_id, receiver_id, message_type, content_preview, created_at
+**message_logs** — session_id, sender_id, receiver_id, message_type, content_preview, created_at (**TTL: auto-expire after 30 days**)
 
-**blocks** — user_id + blocked_id (compound unique)
+**blocks** — user_id + blocked_id (compound unique), blocked_id indexed for reverse lookup
 
 **reports** — reporter_id, reported_id, session_id, reason, created_at
 
-Indexes created on connect in `Database._ensure_indexes()`.
+### Indexes (created on connect)
+
+| Collection | Index | Purpose |
+|------------|-------|---------|
+| users | `user_id` (unique) | Primary lookup |
+| users | `state` | State queries |
+| users | `is_banned` | Ban checks |
+| users | `partner_id` | Partner lookup |
+| users | `(state, is_banned, gender, looking_for)` | Match compound query |
+| users | `(state, is_banned, updated_at)` | Match sort query |
+| sessions | `session_id` (unique) | Session lookup |
+| message_logs | `created_at` (TTL 30d) | Auto-expire |
+| blocks | `(user_id, blocked_id)` (unique) | Block lookup |
+| blocks | `blocked_id` | Reverse block check |
+
+---
+
+## Performance Architecture
+
+### Hot Path (every message relay)
+1. `is_banned()` → **cached** read (no DB hit if cache valid)
+2. `is_valid_chat_session()` → **cached** read (both user + partner)
+3. `RateLimiter.allow()` → **synchronous** (no await, deque-based)
+4. `copy_to_partner()` → 3-retry with RetryAfter backoff
+5. Channel log → **fire-and-forget** via `log_to_channel_bg()`
+6. Message persistence → **fire-and-forget** with error callback
+
+### Database Optimization
+- **$facet aggregation**: `get_stats()` does 1 pipeline instead of 6 `count_documents()`
+- **`estimated_document_count()`** for sessions/messages (O(1) vs O(N))
+- **Parallel writes**: `asyncio.gather()` for session creation, rating saves, message logging
+- **Batch fetch**: `get_users_by_ids()` for search pulse (1 query for N users)
+- **TTL index**: message_logs auto-expire after 30 days
+- **Compound indexes**: match queries use covered index scans
+- **Connection pool**: 25 max, 2 min, zstd compression, retry reads+writes
+
+### Memory Management
+- User cache: periodic GC every 120s prunes expired entries
+- Rate limiter: GC every 500 calls prunes inactive users
+- Search cards: stale entries cleaned on every pulse tick
+- Error handler: notification dedup map cleaned at 1000 entries
 
 ---
 
@@ -101,11 +157,28 @@ InlineKeyboardButton("🔍 Find Partner", callback_data="...", style=S.PRIMARY)
 
 - States: `idle` | `searching` | `chatting`
 - Bidirectional gender compatibility (`any` matches all)
-- In-memory queue; match callback **outside** lock
-- Block list checked before connect
-- Search timeout via job queue (60s sweep)
-- Search pulse job updates waiting screen every 12s
-- Restart clears stale states via `reset_active_sessions()`
+- In-memory queue with bucket hints for O(1) candidate lookup
+- DB reads (get_user, get_block_set) happen **OUTSIDE** the asyncio lock
+- Match callback fires **OUTSIDE** the lock to prevent deadlocks
+- Block list checked bidirectionally before connect
+- Search timeout via job queue (90s sweep interval)
+- Search pulse job updates waiting screen every 25s (batch $in query)
+- Restart rehydrates search queue from MongoDB
+- Restart clears stale chatting states via `reset_chatting_sessions()`
+
+---
+
+## Error Handling
+
+Three-tier classification prevents log floods:
+
+| Tier | Level | Examples |
+|------|-------|---------|
+| **Silent** | DEBUG | "message is not modified", Forbidden (user blocked bot), TimedOut, "query is too old" |
+| **Transient** | WARNING | NetworkError, RetryAfter |
+| **Bug** | ERROR + traceback | Everything else |
+
+User notification rate-limited (30s cooldown per chat).
 
 ---
 
@@ -113,22 +186,10 @@ InlineKeyboardButton("🔍 Find Partner", callback_data="...", style=S.PRIMARY)
 
 HTML formatted: event, UTC time, user ID, name, @username, profile link, language, premium, session ID, partner info, message type + content preview.
 
-Persist message relays to `message_logs` collection.
-
-Startup posts online notice to log channel.
-
----
-
-## Performance
-
-- Async everywhere (motor, python-telegram-bot)
-- MongoDB connection pool (max 20)
-- Rate limit chat messages (default 25/min)
-- `safe_send` with RetryAfter backoff
-- Global error handler
-- Indexed MongoDB queries
-- Job queue: timeout sweep (60s), search pulse (12s)
-- In-memory matcher — no DB hit per match scan
+- **Hot path**: `log_to_channel_bg()` (fire-and-forget, never blocks relay)
+- **Critical path**: `await log_to_channel()` (match connect, reports, bans)
+- **Safety**: total message truncated at 4000 chars
+- **Error callbacks**: fire-and-forget tasks have `add_done_callback` for exception logging
 
 ---
 
@@ -136,11 +197,11 @@ Startup posts online notice to log channel.
 
 | Command | Action |
 |---------|--------|
-| `/stats` | Live dashboard |
+| `/stats` | Live dashboard ($facet aggregation) |
 | `/user <id>` | Full user profile from DB |
-| `/ban <id> [reason]` | Ban + notify |
+| `/ban <id> [reason]` | Ban + notify + leave matcher |
 | `/unban <id>` | Remove ban |
-| `/broadcast <msg>` | Message all non-banned users |
+| `/broadcast <msg>` | Concurrent sends (Semaphore), progress reports |
 
 Auto-ban when `reports_received >= AUTO_BAN_REPORTS`.
 
@@ -153,8 +214,13 @@ Auto-ban when `reports_received >= AUTO_BAN_REPORTS`.
 3. All DB access → `database.py` methods (never raw motor in handlers)
 4. Secrets only in `.env`
 5. Handle: partner left, bot blocked, flood wait, duplicate callbacks
-6. Message relay via `msg.copy(chat_id=partner_id)`
+6. Message relay via `services/relay.py` → `copy_to_partner()` (never raw `msg.copy()`)
 7. Rating callbacks use `pending_feedback` dict — never embed UUID in callback_data
+8. Hot path DB reads use **cached** (`fresh=False`); state mutations use `fresh=True`
+9. Fire-and-forget tasks MUST have `add_done_callback` for error logging
+10. Rate limiter is **synchronous** — never `await` it
+11. Never hold asyncio lock during DB calls (matcher pattern)
+12. Channel logging on hot path uses `log_to_channel_bg()` (fire-and-forget)
 
 ---
 
@@ -175,8 +241,10 @@ Bot must be **admin** in log channel.
 ## Quality Bar
 
 - Instant `query.answer()` on every button
-- No tracebacks to users
+- No tracebacks to users (3-tier error handler)
 - Separator lines: `━━━━━━━━━━━━━━━━━━━━`
 - Context-aware keyboards (idle / searching / chatting)
 - Professional admin forensics in log channel
+- Graceful shutdown with log channel notification
+- Zero memory leaks (cache GC, rate limiter GC, error map GC)
 - World-class anonymous chat — complete, stable, scalable on MongoDB

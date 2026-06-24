@@ -1,3 +1,13 @@
+"""Robust message relay — 3-retry, RetryAfter backoff, graceful Forbidden handling.
+
+Used by chat.py for every message relay to partner. Handles:
+  • RetryAfter (Telegram flood control) — waits and retries
+  • Forbidden (user blocked the bot) — returns False, caller ends chat
+  • BadRequest (deleted chat, etc.) — returns False
+  • Generic TelegramError — retries with backoff
+"""
+
+import asyncio
 import logging
 
 from telegram import Message
@@ -34,7 +44,6 @@ async def copy_to_partner(
         except RetryAfter as exc:
             if attempt == 2:
                 break
-            import asyncio
             await asyncio.sleep(exc.retry_after + 0.3)
         except Forbidden:
             logger.info("partner %s blocked bot (sender=%s)", partner_id, sender_id)
@@ -46,8 +55,7 @@ async def copy_to_partner(
             logger.warning("copy failed %s -> %s: %s", sender_id, partner_id, exc)
             if attempt == 2:
                 return False
-            import asyncio
-            await asyncio.sleep(0.4)
+            await asyncio.sleep(0.4 * (attempt + 1))
     return False
 
 

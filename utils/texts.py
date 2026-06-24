@@ -9,7 +9,7 @@ WELCOME = (
     "🔒 <b>100% Anonymous</b> — partners never see your profile\n"
     "⚡ <b>Instant Matching</b> — connect in seconds\n"
     "🛡 <b>Safe & Monitored</b> — every chat is protected\n"
-    "💎 <b>Premium UI</b> — colorful buttons, zero friction\n\n"
+    "💎 <b>Premium Experience</b> — colorful buttons, zero friction\n\n"
     "📜 <b>Rules:</b> Be respectful · No spam · 18+ only · Report abuse instantly"
 )
 

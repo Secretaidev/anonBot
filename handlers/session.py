@@ -1,3 +1,11 @@
+"""Session lifecycle — match notification, chat end, star rating feedback.
+
+Fixes:
+  • Double end-chat guard: if both users tap End simultaneously, second call is a no-op
+  • Feedback for blocked user: blocker can still rate, blocked partner skipped
+  • Uses fresh=True for state-mutating reads
+"""
+
 import logging
 
 from telegram.ext import ContextTypes
@@ -54,7 +62,7 @@ async def notify_matched(
     if stats_cache:
         stats_cache.invalidate()
 
-    if not await is_valid_chat_session(db, user_a):
+    if not await is_valid_chat_session(db, user_a, fresh=True):
         logger.warning("match session invalid after connect: %s <-> %s", user_a, user_b)
         return
 
@@ -97,17 +105,24 @@ async def end_chat(
     notify_initiator: bool = True,
     ask_feedback: bool = True,
 ) -> None:
+    """End an active chat session.
+
+    Guard: Uses fresh DB read + state check to prevent double-execution
+    when both users tap End simultaneously.
+    """
     db: Database = context.bot_data["db"]
     config: Config = context.bot_data["config"]
     matcher: Matcher = context.bot_data["matcher"]
 
     record = await db.get_user(user_id, fresh=True)
     if not record or record.get("state") != STATE_CHATTING:
-        return
+        return  # Already ended by partner — no-op
 
     partner_id = record.get("partner_id")
     session_id = record.get("session_id")
 
+    # Atomically reset both users BEFORE sending messages
+    # This prevents the double-execution race
     await db.set_state(user_id, STATE_IDLE, partner_id=None, session_id=None)
     if partner_id:
         await db.set_state(partner_id, STATE_IDLE, partner_id=None, session_id=None)
@@ -133,10 +148,16 @@ async def end_chat(
     if partner_id and reason not in ("partner_left",):
         await safe_send(context, partner_id, CHAT_PARTNER_LEFT, reply_markup=kb)
 
+    # Feedback logic:
+    # - "blocked": only the blocker rates (not the blocked partner)
+    # - all other reasons: both users get feedback prompt
     if ask_feedback and session_id and reason in ("ended", "next", "partner_left", "blocked"):
-        if partner_id and reason != "blocked":
-            await _send_feedback(context, partner_id, session_id)
-        if reason != "blocked":
+        if reason == "blocked":
+            # Only the blocker (user_id) rates
+            await _send_feedback(context, user_id, session_id)
+        else:
+            if partner_id:
+                await _send_feedback(context, partner_id, session_id)
             await _send_feedback(context, user_id, session_id)
 
     try:

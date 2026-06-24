@@ -1,3 +1,12 @@
+"""HTML-formatted admin channel logger with MongoDB message persistence.
+
+Performance improvements:
+  • Total message length capped at 4000 chars to prevent Telegram 4096 limit
+  • Fire-and-forget helper for non-critical events
+  • All Telegram API exceptions caught and logged (never crashes caller)
+"""
+
+import asyncio
 import logging
 from html import escape
 from datetime import datetime, timezone
@@ -8,6 +17,9 @@ from telegram.ext import ContextTypes
 from database import Database
 
 logger = logging.getLogger(__name__)
+
+# Telegram message length limit minus safety margin
+_MAX_LOG_LENGTH = 4000
 
 
 def _s(value: object) -> str:
@@ -43,6 +55,7 @@ async def log_to_channel(
     extra: str | None = None,
     persist_message: bool = True,
 ) -> None:
+    """Send structured HTML log to admin channel. Never raises."""
     try:
         name = _s(display_name(user))
         username = f"@{_s(user.username)}" if user.username else "—"
@@ -57,7 +70,7 @@ async def log_to_channel(
             f"<b>🆔 User ID</b>  <code>{user.id}</code>",
             f"<b>📛 Name</b>  {name}",
             f"<b>🏷 Username</b>  {username}",
-            f"<b>🔗 Profile</b>  <a href=\"{link}\">Open</a>",
+            f'<b>🔗 Profile</b>  <a href="{link}">Open</a>',
             f"<b>🌐 Language</b>  {_s(lang)}",
             f"<b>💎 Premium</b>  {is_premium}",
         ]
@@ -73,7 +86,7 @@ async def log_to_channel(
                     "━━━━━━━━━━━━━━━━━━━━",
                     f"<b>🤝 Partner ID</b>  <code>{partner.id}</code>",
                     f"<b>🤝 Partner</b>  {p_name} ({p_user})",
-                    f"<b>🔗 Partner</b>  <a href=\"{profile_link(partner)}\">Open</a>",
+                    f'<b>🔗 Partner</b>  <a href="{profile_link(partner)}">Open</a>',
                 ]
             )
 
@@ -92,9 +105,15 @@ async def log_to_channel(
         if extra:
             lines.extend(["━━━━━━━━━━━━━━━━━━━━", _s(extra)])
 
+        text = "\n".join(lines)
+
+        # Safety: truncate if exceeds Telegram limit
+        if len(text) > _MAX_LOG_LENGTH:
+            text = text[:_MAX_LOG_LENGTH] + "\n…[truncated]"
+
         await context.bot.send_message(
             chat_id=channel_id,
-            text="\n".join(lines),
+            text=text,
             parse_mode="HTML",
             disable_web_page_preview=True,
         )
@@ -112,3 +131,29 @@ async def log_to_channel(
             )
         except Exception as exc:
             logger.warning("db log_message failed: %s", exc)
+
+
+def log_to_channel_bg(
+    context: ContextTypes.DEFAULT_TYPE,
+    channel_id: int,
+    db: Database,
+    **kwargs,
+) -> None:
+    """Fire-and-forget log — use for non-critical events on the hot path.
+
+    Creates an asyncio task with proper error callback so exceptions
+    are logged instead of silently swallowed.
+    """
+    task = asyncio.create_task(
+        log_to_channel(context, channel_id, db, **kwargs)
+    )
+    task.add_done_callback(_task_error_callback)
+
+
+def _task_error_callback(task: asyncio.Task) -> None:
+    """Log any unhandled exception from fire-and-forget tasks."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc:
+        logger.warning("background log task failed: %s", exc)

@@ -1,3 +1,12 @@
+"""Admin commands — /stats, /user, /ban, /unban, /broadcast.
+
+Improvements:
+  • Broadcast uses asyncio.Semaphore for concurrent sends (configurable)
+  • Progress reporting during broadcast
+  • All admin commands check _is_admin first
+"""
+
+import asyncio
 from html import escape
 
 from telegram import Update
@@ -139,6 +148,11 @@ async def admin_unban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Broadcast to all non-banned users with concurrent sends + progress reports.
+
+    Uses asyncio.Semaphore to limit concurrent API calls (configurable via
+    BROADCAST_CONCURRENCY env var, default 20).
+    """
     if not update.effective_user or not update.message:
         return
     if not _is_admin(context, update.effective_user.id):
@@ -150,13 +164,48 @@ async def admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     text = " ".join(context.args)
     db: Database = context.bot_data["db"]
+    config = context.bot_data["config"]
 
     user_ids = await db.get_broadcast_user_ids()
-    sent = failed = 0
-    for uid in user_ids:
-        if await safe_send(context, uid, f"📢 <b>Announcement</b>\n\n{text}"):
-            sent += 1
-        else:
-            failed += 1
+    total = len(user_ids)
 
-    await update.message.reply_text(f"📢 Sent: {sent} | Failed: {failed}")
+    if total == 0:
+        await update.message.reply_text("No users to broadcast to.")
+        return
+
+    progress_msg = await update.message.reply_text(
+        f"📢 Broadcasting to {total} users…"
+    )
+
+    sem = asyncio.Semaphore(config.broadcast_concurrency)
+    sent = 0
+    failed = 0
+    broadcast_text = f"📢 <b>Announcement</b>\n\n{text}"
+
+    async def _send_one(uid: int) -> bool:
+        async with sem:
+            return await safe_send(context, uid, broadcast_text)
+
+    # Process in batches for progress reporting
+    batch_size = max(total // 5, 50)
+    for i in range(0, total, batch_size):
+        batch = user_ids[i:i + batch_size]
+        results = await asyncio.gather(*[_send_one(uid) for uid in batch])
+        sent += sum(1 for r in results if r)
+        failed += sum(1 for r in results if not r)
+
+        # Update progress (don't spam — only every batch)
+        try:
+            pct = int((i + len(batch)) / total * 100)
+            await progress_msg.edit_text(
+                f"📢 Broadcasting… {pct}% ({sent} sent, {failed} failed)"
+            )
+        except Exception:
+            pass
+
+    try:
+        await progress_msg.edit_text(
+            f"📢 Broadcast complete!\n\n✅ Sent: {sent} | ❌ Failed: {failed}"
+        )
+    except Exception:
+        await update.message.reply_text(f"📢 Sent: {sent} | Failed: {failed}")

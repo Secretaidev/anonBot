@@ -1,3 +1,9 @@
+"""Handler for /start and /menu commands.
+
+Uses cached DB reads where safe (is_banned) and fresh reads only
+where state correctness matters (home_screen, setup flow).
+"""
+
 from telegram import Update
 from telegram.ext import ContextTypes
 

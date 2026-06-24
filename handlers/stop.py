@@ -1,3 +1,5 @@
+"""Handler for /stop command — end chat or cancel search."""
+
 from telegram import Update
 from telegram.ext import ContextTypes
 
@@ -5,8 +7,8 @@ from database import Database
 from handlers.session import end_chat
 from keyboards.buttons import main_menu_keyboard
 from services.matcher import Matcher, STATE_CHATTING, STATE_IDLE, STATE_SEARCHING
-from utils.helpers import is_banned, menu_for_user, safe_send, untrack_search_card
-from utils.texts import BANNED, SEARCH_CANCELLED, STOP_CHAT, STOP_IDLE, STOP_SEARCH
+from utils.helpers import is_banned, menu_for_user, untrack_search_card
+from utils.texts import BANNED, STOP_CHAT, STOP_IDLE, STOP_SEARCH
 
 
 async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -32,6 +34,9 @@ async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await matcher.leave(user.id)
         await db.set_state(user.id, STATE_IDLE)
         untrack_search_card(context, user.id)
+        stats_cache = context.application.bot_data.get("stats_cache")
+        if stats_cache:
+            stats_cache.invalidate()
         await update.message.reply_text(
             STOP_SEARCH, reply_markup=main_menu_keyboard()
         )

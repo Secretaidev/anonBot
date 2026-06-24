@@ -1,3 +1,11 @@
+"""All inline button callback handlers — deduplicated, defensive, fast.
+
+Improvements:
+  • Null-safe stats_cache access throughout
+  • Consistent use of safe_edit for all button responses
+  • Search screen helper exported for jobs.py
+"""
+
 from telegram import Update
 from telegram.ext import ContextTypes
 
@@ -69,13 +77,14 @@ async def _search_screen(
     matcher: Matcher,
     stats: dict,
 ) -> str:
+    """Build the animated search screen text."""
     pulse_idx = context.application.bot_data.get("pulse_idx", 0)
     from utils.texts import PULSE_FRAMES
     pulse = PULSE_FRAMES[pulse_idx % len(PULSE_FRAMES)]
     return SEARCHING.format(
         pulse=pulse,
         online=max(stats.get("searching", 0), await matcher.queue_size()),
-        chatting=stats["chatting"],
+        chatting=stats.get("chatting", 0),
     )
 
 
@@ -94,7 +103,7 @@ async def _start_search(
         return
 
     if record.get("state") == STATE_CHATTING:
-        if await is_valid_chat_session(db, user_id):
+        if await is_valid_chat_session(db, user_id, fresh=True):
             await query.answer("Already in a chat.", show_alert=True)
         else:
             await db.set_state(user_id, STATE_IDLE, partner_id=None, session_id=None)
@@ -106,7 +115,7 @@ async def _start_search(
     if stats_cache:
         stats_cache.invalidate()
 
-    if matched and await is_valid_chat_session(db, user_id):
+    if matched and await is_valid_chat_session(db, user_id, fresh=True):
         untrack_search_card(context, user_id)
         await safe_edit(
             query,
@@ -120,7 +129,11 @@ async def _start_search(
         await db.set_state(user_id, STATE_SEARCHING)
         await matcher.join(user_id, record["gender"], record["looking_for"])
 
-    stats = await stats_cache.get(context.bot_data["db"].get_stats)
+    # Null-safe stats_cache access
+    stats = {}
+    if stats_cache:
+        stats = await stats_cache.get(context.bot_data["db"].get_stats)
+
     text = await _search_screen(context, matcher, stats)
     await safe_edit(
         query,
@@ -159,6 +172,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await safe_edit(query, BANNED)
         return
 
+    # ── Star rating callbacks ──
     if data.startswith(CB_RATE):
         stars_raw = data[len(CB_RATE):]
         try:
@@ -178,6 +192,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             )
         return
 
+    # ── Gender selection ──
     if data.startswith(CB_GENDER):
         gender = data[len(CB_GENDER):]
         await db.set_gender(user.id, gender)
@@ -188,6 +203,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
         return
 
+    # ── Looking-for selection ──
     if data.startswith(CB_LOOKING):
         looking = data[len(CB_LOOKING):]
         await db.set_looking_for(user.id, looking)
@@ -208,6 +224,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
         return
 
+    # ── Action callbacks ──
     if not data.startswith(CB_ACTION):
         return
 
@@ -234,7 +251,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
 
     if action == ACT_END_CHAT:
-        record = await db.get_user(user.id)
+        record = await db.get_user(user.id, fresh=True)
         if record and record.get("state") == STATE_CHATTING:
             await safe_edit(query, CONFIRM_END, reply_markup=confirm_end_chat_keyboard())
         return
@@ -303,7 +320,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         partner_id = record.get("partner_id") if record else None
         if partner_id:
             await db.add_block(user.id, partner_id)
-            await end_chat(context, user.id, reason="blocked", notify_initiator=False, ask_feedback=False)
+            await end_chat(context, user.id, reason="blocked", notify_initiator=False)
             await safe_edit(
                 query,
                 "🚫 Partner blocked. They won't be matched with you again.",
@@ -337,8 +354,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
 
     if action == ACT_STATS:
-        stats_cache = context.application.bot_data["stats_cache"]
-        stats = await stats_cache.get(db.get_stats)
+        stats_cache = context.application.bot_data.get("stats_cache")
+        stats = await stats_cache.get(db.get_stats) if stats_cache else await db.get_stats()
         queue = await matcher.queue_size()
         record = await db.get_user(user.id)
         await safe_edit(

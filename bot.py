@@ -1,3 +1,13 @@
+"""AnoyBot — entry point, job queue, handler registration.
+
+Production-grade:
+  • Concurrent updates enabled for high throughput
+  • Tuned HTTP timeouts for Telegram API
+  • Graceful shutdown with user notification
+  • Bootstrap retries for transient network failures
+  • Rate limiter cleanup on shutdown
+"""
+
 import logging
 
 from telegram.error import NetworkError, TimedOut
@@ -32,6 +42,8 @@ logging.basicConfig(
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("pymongo").setLevel(logging.WARNING)
+logging.getLogger("motor").setLevel(logging.WARNING)
 logger = logging.getLogger("anoybot")
 
 
@@ -95,8 +107,25 @@ async def post_init(application: Application) -> None:
 
 
 async def post_shutdown(application: Application) -> None:
+    """Graceful shutdown — close DB connection cleanly."""
     db: Database = application.bot_data["db"]
+    config = application.bot_data["config"]
+
+    # Notify log channel
+    try:
+        me = await application.bot.get_me()
+        await application.bot.send_message(
+            config.log_channel_id,
+            f"🔴 <b>{config.brand_name} Shutting Down</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"🤖 @{me.username}",
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+
     await db.close()
+    logger.info("Bot shutdown complete")
 
 
 async def _timeout_job(context) -> None:
