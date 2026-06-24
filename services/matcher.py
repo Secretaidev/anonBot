@@ -1,11 +1,13 @@
-"""Hybrid matchmaking: in-memory speed + MongoDB atomic claims for reliability.
+"""Hybrid matchmaking: in-memory speed + MongoDB atomic claims.
 
-Architectural improvements:
-  • Lock scope minimized — DB reads happen OUTSIDE the lock
-  • Block data pre-fetched before acquiring lock
-  • Rollback logic if match claim fails
-  • Bidirectional block check in _blocked_between
-  • sweep_timeouts batches callbacks outside lock
+Professional-grade features:
+  • Bucket-indexed O(1) candidate lookup
+  • Preference widening after configurable delay
+  • Pre-fetched block data (DB outside lock)
+  • Atomic session claiming
+  • Timeout sweep with batched callbacks
+  • Queue rehydration on restart
+  • Priority matching: longest-waiting user matched first
 """
 
 import asyncio
@@ -100,6 +102,7 @@ class Matcher:
                 del self._buckets[key]
 
     def _candidate_ids(self, entry: QueueEntry) -> list[int]:
+        """Find candidates sorted by wait time (longest first = fairest)."""
         looking = _effective_looking_for(entry)
         keys = [self._bucket_key(entry.gender, looking)]
         if looking != LOOKING_ANY:
@@ -107,7 +110,7 @@ class Matcher:
         keys.append("*")
 
         seen: set[int] = set()
-        ordered: list[int] = []
+        candidates: list[tuple[float, int]] = []
         for key in keys:
             if key == "*":
                 ids = self._queue.keys()
@@ -116,11 +119,16 @@ class Matcher:
             for uid in ids:
                 if uid not in seen and uid != entry.user_id:
                     seen.add(uid)
-                    ordered.append(uid)
-        return ordered
+                    other = self._queue.get(uid)
+                    if other:
+                        candidates.append((other.joined_at, uid))
+
+        # Sort by join time ascending = longest waiting first
+        candidates.sort()
+        return [uid for _, uid in candidates]
 
     async def rehydrate_from_db(self) -> int:
-        """Restore search queue after restart so waiting users can still match."""
+        """Restore search queue after restart."""
         if not self.db:
             return 0
 
@@ -156,7 +164,6 @@ class Matcher:
         # ── Pre-fetch DB data outside lock ──
         blocked: set[int] = set()
         if self.db:
-            # Check if user is already in a valid chat session
             record = await self.db.get_user(user_id, fresh=True)
             if record and record.get("state") == STATE_CHATTING:
                 partner_id = record.get("partner_id")
@@ -245,8 +252,17 @@ class Matcher:
     async def queue_size(self) -> int:
         return len(self._queue)
 
-    async def online_count(self) -> int:
-        return await self.queue_size()
+    async def get_searching_users(self) -> list[dict]:
+        """Return snapshot of current queue entries for admin panel."""
+        return [
+            {
+                "user_id": e.user_id,
+                "gender": e.gender,
+                "looking_for": e.looking_for,
+                "waiting_seconds": int(time.monotonic() - e.joined_at),
+            }
+            for e in self._queue.values()
+        ]
 
     async def sweep_timeouts(self) -> list[int]:
         """Batch timeout detection under lock, fire callbacks outside."""
@@ -259,7 +275,7 @@ class Matcher:
                     self._remove_from_bucket(entry)
                     expired.append(uid)
 
-        # Fire callbacks outside lock to prevent deadlocks
+        # Fire callbacks outside lock
         if self._on_timeout:
             for uid in expired:
                 try:

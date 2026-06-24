@@ -17,7 +17,7 @@ from database import Database
 from keyboards.buttons import feedback_keyboard, main_menu_keyboard
 from services.logger import log_to_channel_bg
 from services.matcher import Matcher, STATE_CHATTING, STATE_IDLE, STATE_SEARCHING
-from utils.helpers import chat_to_user, is_valid_chat_session, safe_send, untrack_search_card
+from utils.helpers import is_valid_chat_session, safe_send, untrack_search_card
 from utils.texts import (
     CHAT_ENDED, CHAT_NEXT, CHAT_PARTNER_LEFT,
     FEEDBACK, MATCHED, SEARCH_BLOCKED_RETRY,

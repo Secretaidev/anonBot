@@ -60,16 +60,15 @@ utils/helpers.py        → safe_send, safe_edit, search card tracking
                           is_valid_chat_session() cached on relay, fresh on mutations
 utils/ratelimit.py      → deque-based sliding window, periodic GC, zero-lock sync
 utils/mongo.py          → normalize MongoDB connection URL
-handlers/start.py       → /start, /menu
-handlers/callbacks.py   → all button callbacks + star ratings (null-safe throughout)
-handlers/chat.py        → message relay via services/relay.py + fire-and-forget logging
-                          panel input interception before relay
-handlers/session.py     → match notify, end chat (double-execution guard), feedback
+handlers/start.py       → /start, /menu, /help
+handlers/callbacks.py   → all button callbacks + star ratings (null-safe)
+handlers/chat.py        → message relay + typing indicator forwarding
+                          panel input interception, fire-and-forget logging
+handlers/session.py     → match notify (parallel), end chat (parallel resets)
 handlers/stop.py        → /stop
 handlers/admin.py       → /stats /user /ban /unban /broadcast (permission-gated)
-handlers/panel.py       → Owner & Admin in-bot panel (/panel command + callbacks)
-                          user management, broadcasts, admin CRUD, permission editor,
-                          reports viewer, queue monitor — all via inline buttons
+handlers/panel.py       → Owner & Admin in-bot panel (/panel + callbacks)
+                          Select All permissions, admin names, detailed queue view
 handlers/errors.py      → 3-tier error classification (silent/transient/bug)
 ```
 

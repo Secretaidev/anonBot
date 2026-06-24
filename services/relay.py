@@ -1,26 +1,46 @@
-"""Robust message relay — 3-retry, RetryAfter backoff, graceful Forbidden handling.
+"""Robust message relay — 3-retry, RetryAfter backoff, typing indicator.
 
-Used by chat.py for every message relay to partner. Handles:
+Professional features:
+  • 3-retry with exponential backoff
   • RetryAfter (Telegram flood control) — waits and retries
-  • Forbidden (user blocked the bot) — returns False, caller ends chat
-  • BadRequest (deleted chat, etc.) — returns False
-  • Generic TelegramError — retries with backoff
+  • Forbidden (user blocked bot) — returns False
+  • Typing action forwarded for immersive UX
 """
 
 import asyncio
 import logging
 
 from telegram import Message
+from telegram.constants import ChatAction
 from telegram.error import BadRequest, Forbidden, RetryAfter, TelegramError
 from telegram.ext import ContextTypes
 
-from database import Database
-from handlers.session import end_chat
 from utils.helpers import get_message_type
 
 logger = logging.getLogger(__name__)
 
 
+async def forward_typing(
+    context: ContextTypes.DEFAULT_TYPE,
+    partner_id: int,
+    message: Message,
+) -> None:
+    """Send typing/upload action to partner for live presence feel."""
+    msg_type = get_message_type(message)
+    action_map = {
+        "photo": ChatAction.UPLOAD_PHOTO,
+        "video": ChatAction.UPLOAD_VIDEO,
+        "video_note": ChatAction.UPLOAD_VIDEO_NOTE,
+        "voice": ChatAction.RECORD_VOICE,
+        "audio": ChatAction.UPLOAD_DOCUMENT,
+        "document": ChatAction.UPLOAD_DOCUMENT,
+        "sticker": ChatAction.CHOOSE_STICKER,
+    }
+    action = action_map.get(msg_type, ChatAction.TYPING)
+    try:
+        await context.bot.send_chat_action(chat_id=partner_id, action=action)
+    except Exception:
+        pass  # Non-critical — never block relay for this
 
 
 async def copy_to_partner(
@@ -55,38 +75,3 @@ async def copy_to_partner(
                 return False
             await asyncio.sleep(0.4 * (attempt + 1))
     return False
-
-
-async def relay_chat_message(
-    context: ContextTypes.DEFAULT_TYPE,
-    db: Database,
-    *,
-    user_id: int,
-    partner_id: int,
-    session_id: str,
-    message: Message,
-    max_length: int,
-) -> tuple[bool, str | None]:
-    """
-    Relay one message to partner.
-    Returns (ok, error_text). Never raises.
-    """
-    content = message.text or message.caption
-    msg_type = get_message_type(message)
-    if content is None and msg_type == "text":
-        content = ""
-    if content is None:
-        content = f"[{msg_type}]"
-
-    if len(content) > max_length:
-        return False, f"⚠️ Message too long (max {max_length} chars)."
-
-    ok = await copy_to_partner(context, message, partner_id, sender_id=user_id)
-    if ok:
-        return True, None
-
-    try:
-        await end_chat(context, user_id, reason="partner_left")
-    except Exception as exc:
-        logger.warning("end_chat after relay fail: %s", exc)
-    return False, "❌ Partner unavailable. Chat ended."

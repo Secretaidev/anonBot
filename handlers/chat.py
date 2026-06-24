@@ -18,7 +18,7 @@ from database import Database
 from handlers.panel import handle_panel_input
 from handlers.session import end_chat
 from services.logger import log_to_channel_bg
-from services.relay import copy_to_partner
+from services.relay import copy_to_partner, forward_typing
 from utils.helpers import get_message_type
 from utils.ratelimit import RateLimiter
 from utils.texts import BANNED, NOT_IN_CHAT, RATE_LIMITED, REPORT_SENT
@@ -80,7 +80,10 @@ async def relay_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
         return
 
-    # ── Relay with retry/backoff ──
+    # ── Typing indicator + Relay (concurrent for zero latency) ──
+    typing_task = asyncio.create_task(forward_typing(context, partner_id, msg))
+    typing_task.add_done_callback(_task_error_cb)
+
     ok = await copy_to_partner(context, msg, partner_id, sender_id=user.id)
     if not ok:
         logger.warning("relay failed %s -> %s", user.id, partner_id)

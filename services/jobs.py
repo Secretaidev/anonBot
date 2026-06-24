@@ -25,6 +25,7 @@ async def setup_bot_commands(application: Application) -> None:
         [
             BotCommand("start", "Open AnoyBot"),
             BotCommand("menu", "Main menu"),
+            BotCommand("help", "How it works"),
             BotCommand("stop", "End chat or cancel search"),
             BotCommand("report", "Report abuse"),
             BotCommand("panel", "Admin / Owner panel"),

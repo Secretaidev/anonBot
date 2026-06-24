@@ -27,7 +27,7 @@ from handlers.panel import panel_callback, panel_command
 from handlers.chat import relay_message, report_command
 from handlers.errors import error_handler
 from handlers.session import notify_matched
-from handlers.start import menu_command, start_command
+from handlers.start import help_command, menu_command, start_command
 from handlers.stop import stop_command
 from keyboards.buttons import main_menu_keyboard
 from services.jobs import notify_startup, search_pulse_job, setup_bot_commands
@@ -153,13 +153,13 @@ def _build_application(config) -> Application:
     builder = (
         Application.builder()
         .token(config.bot_token)
-        .connect_timeout(30.0)
-        .read_timeout(30.0)
-        .write_timeout(30.0)
-        .pool_timeout(30.0)
-        .get_updates_connect_timeout(30.0)
+        .connect_timeout(15.0)
+        .read_timeout(15.0)
+        .write_timeout(15.0)
+        .pool_timeout(10.0)
+        .get_updates_connect_timeout(15.0)
         .get_updates_read_timeout(42.0)
-        .get_updates_write_timeout(30.0)
+        .get_updates_write_timeout(15.0)
         .concurrent_updates(True)
     )
     if config.telegram_api_base_url:
@@ -177,6 +177,7 @@ def _build_application(config) -> Application:
 
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("menu", menu_command))
+    app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("stop", stop_command))
     app.add_handler(CommandHandler("report", report_command))
     app.add_handler(CommandHandler("stats", admin_stats))

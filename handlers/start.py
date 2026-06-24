@@ -86,3 +86,14 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     text, keyboard = await home_screen(db, matcher, user.id, brand=config.brand_name)
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_user or not update.message:
+        return
+    from utils.texts import HELP
+    from keyboards.buttons import main_menu_keyboard
+    await update.message.reply_text(
+        HELP, parse_mode="HTML", reply_markup=main_menu_keyboard()
+    )
+

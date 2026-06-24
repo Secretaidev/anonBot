@@ -58,6 +58,7 @@ PA_ADMIN_RM = "ar"       # + :uid
 PA_ADMIN_RM_YES = "ary"  # + :uid
 PA_ADMIN_EDIT = "ae"     # + :uid
 PA_PERM_TOGGLE = "pt"    # + :uid:perm
+PA_PERM_ALL = "pa"       # + :uid  (select all / deselect all)
 PA_SAVE_ADMIN = "sa"     # + :uid
 PA_REPORTS = "rp"
 PA_QUEUE = "qu"
@@ -258,14 +259,20 @@ def user_management_keyboard() -> InlineKeyboardMarkup:
 def admin_list_keyboard(
     admins: list[dict],
     owner_ids: frozenset[int],
+    names: dict[int, str] | None = None,
 ) -> InlineKeyboardMarkup:
+    """Admin list with names resolved from DB."""
+    names = names or {}
     rows: list[list[InlineKeyboardButton]] = []
     for adm in admins:
         uid = adm["user_id"]
         if uid in owner_ids:
             continue
         perms = adm.get("permissions", [])
-        label = f"👮 {uid} ({len(perms)} perms)"
+        display = names.get(uid, str(uid))
+        all_count = len(ALL_PERMISSIONS)
+        perm_txt = "All" if len(perms) >= all_count else f"{len(perms)}/{all_count}"
+        label = f"👮 {display} ({perm_txt})"
         rows.append([
             _pbtn(label, f"{PA_ADMIN_EDIT}:{uid}", style=S.PRIMARY),
             _pbtn("🗑", f"{PA_ADMIN_RM}:{uid}", style=S.DANGER),
@@ -281,6 +288,16 @@ def permission_editor_keyboard(
     current_perms: list[str],
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
+
+    # ── Select All / Deselect All toggle ──
+    all_keys = [k for k, _ in ALL_PERMISSIONS]
+    all_selected = all(k in current_perms for k in all_keys)
+    if all_selected:
+        rows.append([_pbtn("❌ Deselect All", f"{PA_PERM_ALL}:{target_uid}", style=S.DANGER)])
+    else:
+        rows.append([_pbtn("✅ Select All", f"{PA_PERM_ALL}:{target_uid}", style=S.SUCCESS)])
+
+    # ── Individual permission toggles ──
     for perm_key, perm_label in ALL_PERMISSIONS:
         is_on = perm_key in current_perms
         icon = "✅" if is_on else "❌"

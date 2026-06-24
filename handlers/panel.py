@@ -20,8 +20,8 @@ from keyboards.buttons import (
     CB_PANEL,
     PA_MAIN, PA_STATS, PA_USERS, PA_USER_LOOKUP, PA_USER_BAN, PA_USER_UNBAN,
     PA_BROADCAST, PA_ADMINS, PA_ADMIN_ADD, PA_ADMIN_RM, PA_ADMIN_RM_YES,
-    PA_ADMIN_EDIT, PA_PERM_TOGGLE, PA_SAVE_ADMIN, PA_REPORTS, PA_QUEUE,
-    PA_FORCE_DC, PA_HOME,
+    PA_ADMIN_EDIT, PA_PERM_TOGGLE, PA_PERM_ALL, PA_SAVE_ADMIN, PA_REPORTS,
+    PA_QUEUE, PA_FORCE_DC, PA_HOME,
     ALL_PERMISSIONS, PERM_LABELS,
     admin_list_keyboard, admin_panel_keyboard, confirm_remove_admin_keyboard,
     main_menu_keyboard, owner_panel_keyboard, panel_back_keyboard,
@@ -32,6 +32,22 @@ from services.matcher import Matcher, STATE_IDLE
 from utils.helpers import home_screen, safe_edit, safe_send
 
 logger = logging.getLogger(__name__)
+
+
+async def _admin_names(db: Database, admins: list[dict]) -> dict[int, str]:
+    """Resolve display names for admin list — batch fetch."""
+    uids = [a["user_id"] for a in admins]
+    if not uids:
+        return {}
+    users = await db.get_users_by_ids(uids)
+    names: dict[int, str] = {}
+    for uid in uids:
+        rec = users.get(uid)
+        if rec:
+            names[uid] = rec.get("first_name") or str(uid)
+        else:
+            names[uid] = str(uid)
+    return names
 
 
 # ─── Panel text strings ───
@@ -273,6 +289,7 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await query.answer("Owner only.", show_alert=True)
             return
         admins = await db.list_admins()
+        names = await _admin_names(db, admins)
         count = len([a for a in admins if a["user_id"] not in config.admin_ids])
         await safe_edit(
             query,
@@ -280,7 +297,7 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"━━━━━━━━━━━━━━━━━━━━\n\n"
             f"📋 {count} admin(s) configured.\n"
             f"Tap an admin to edit permissions, or add a new one.",
-            reply_markup=admin_list_keyboard(admins, config.admin_ids),
+            reply_markup=admin_list_keyboard(admins, config.admin_ids, names),
         )
         return
 
@@ -321,13 +338,14 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if removed:
             await safe_send(context, target_uid, "⚠️ Your admin access has been revoked.")
         admins = await db.list_admins()
+        names = await _admin_names(db, admins)
         count = len([a for a in admins if a["user_id"] not in config.admin_ids])
         await safe_edit(
             query,
             f"{'✅ Admin removed.' if removed else '❌ Admin not found.'}\n\n"
             f"👮 <b>Admin Management</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
             f"📋 {count} admin(s) configured.",
-            reply_markup=admin_list_keyboard(admins, config.admin_ids),
+            reply_markup=admin_list_keyboard(admins, config.admin_ids, names),
         )
         return
 
@@ -383,6 +401,31 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
+    # ── Select All / Deselect All ──
+    if action.startswith(f"{PA_PERM_ALL}:"):
+        if not is_owner:
+            return
+        target_uid = int(action.split(":")[-1])
+        editing = context.user_data.get("editing_perms", [])
+        all_keys = [k for k, _ in ALL_PERMISSIONS]
+        if all(k in editing for k in all_keys):
+            editing.clear()  # deselect all
+        else:
+            editing.clear()
+            editing.extend(all_keys)  # select all
+        context.user_data["editing_perms"] = editing
+        user_rec = await db.get_user(target_uid)
+        name = escape(user_rec.get("first_name", str(target_uid))) if user_rec else str(target_uid)
+        await safe_edit(
+            query,
+            f"⚙️ <b>Permissions for {name}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"ID: <code>{target_uid}</code>\n"
+            f"Tap to toggle, then Save.",
+            reply_markup=permission_editor_keyboard(target_uid, editing),
+        )
+        return
+
     # ── Save Admin Permissions ──
     if action.startswith(f"{PA_SAVE_ADMIN}:"):
         if not is_owner:
@@ -400,13 +443,14 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
 
         admins = await db.list_admins()
+        names = await _admin_names(db, admins)
         count = len([a for a in admins if a["user_id"] not in config.admin_ids])
         await safe_edit(
             query,
             f"✅ Permissions saved for <code>{target_uid}</code>.\n\n"
             f"👮 <b>Admin Management</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
             f"📋 {count} admin(s) configured.",
-            reply_markup=admin_list_keyboard(admins, config.admin_ids),
+            reply_markup=admin_list_keyboard(admins, config.admin_ids, names),
         )
         return
 
@@ -446,16 +490,36 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if "manage_search" not in perms and not is_owner:
             await query.answer("No permission.", show_alert=True)
             return
-        searching = await db.get_users_searching()
-        pairs = await db.get_chatting_pairs()
+
+        # Parallel fetch for speed
+        queue_entries, pairs = await asyncio.gather(
+            matcher.get_searching_users(),
+            db.get_chatting_pairs(),
+        )
         queue = await matcher.queue_size()
 
         lines = [
             "🔍 <b>Search Queue & Active Chats</b>\n━━━━━━━━━━━━━━━━━━━━\n",
-            f"📡 In-memory queue: <b>{queue}</b>",
-            f"🔍 DB searching: <b>{len(searching)}</b>",
+            f"📡 Queue: <b>{queue}</b>",
             f"💬 Active pairs: <b>{len(pairs)}</b>",
         ]
+
+        if queue_entries:
+            lines.append("\n<b>Searching Users:</b>")
+            gender_icons = {"male": "👨", "female": "👩", "other": "🌈"}
+            look_icons = {"male": "👨", "female": "👩", "any": "🌍"}
+            for entry in queue_entries[:20]:
+                uid = entry["user_id"]
+                g = gender_icons.get(entry.get("gender", ""), "❓")
+                l = look_icons.get(entry.get("looking_for", ""), "❓")
+                wait = entry.get("waiting_seconds", 0)
+                if wait >= 60:
+                    wait_txt = f"{wait // 60}m {wait % 60}s"
+                else:
+                    wait_txt = f"{wait}s"
+                lines.append(f"  {g}→{l} <code>{uid}</code> ({wait_txt})")
+            if len(queue_entries) > 20:
+                lines.append(f"  … and {len(queue_entries) - 20} more")
 
         if pairs:
             lines.append("\n<b>Active Chat Pairs:</b>")
@@ -465,6 +529,8 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 lines.append(f"  … and {len(pairs) - 15} more")
 
         text = "\n".join(lines)
+        if len(text) > 3900:
+            text = text[:3900] + "\n…"
         await safe_edit(query, text, reply_markup=panel_back_keyboard())
         return
 

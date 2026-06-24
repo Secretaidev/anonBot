@@ -716,12 +716,12 @@ class Database:
         return [doc["user_id"] async for doc in cursor]
 
     async def get_users_by_ids(self, user_ids: list[int]) -> dict[int, dict[str, Any]]:
-        """Batch fetch users by IDs — single query for pulse job optimization."""
+        """Batch fetch users by IDs — single $in query."""
         if not user_ids:
             return {}
         cursor = self.db.users.find(
             {"user_id": {"$in": user_ids}},
-            {"user_id": 1, "state": 1},
+            {"user_id": 1, "state": 1, "first_name": 1, "username": 1},
         )
         return {int(doc["user_id"]): dict(doc) async for doc in cursor}
 
