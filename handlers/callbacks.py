@@ -35,7 +35,9 @@ from services.logger import log_to_channel
 from services.matcher import Matcher, STATE_CHATTING, STATE_IDLE, STATE_SEARCHING
 from handlers.session import end_chat
 from utils.helpers import (
+    home_screen,
     is_banned,
+    is_valid_chat_session,
     menu_for_user,
     safe_edit,
     track_search_card,
@@ -92,7 +94,10 @@ async def _start_search(
         return
 
     if record.get("state") == STATE_CHATTING:
-        await query.answer("Already in a chat.", show_alert=True)
+        if await is_valid_chat_session(db, user_id):
+            await query.answer("Already in a chat.", show_alert=True)
+        else:
+            await db.set_state(user_id, STATE_IDLE, partner_id=None, session_id=None)
         return
 
     await db.set_state(user_id, STATE_SEARCHING)
@@ -101,34 +106,39 @@ async def _start_search(
     if stats_cache:
         stats_cache.invalidate()
 
-    if matched:
+    if matched and await is_valid_chat_session(db, user_id):
         untrack_search_card(context, user_id)
         await safe_edit(
             query,
             PARTNER_FOUND_HINT,
             reply_markup=main_menu_keyboard(is_chatting=True),
         )
-    else:
-        stats_cache = context.application.bot_data["stats_cache"]
-        stats = await stats_cache.get(context.bot_data["db"].get_stats)
-        text = await _search_screen(context, matcher, stats)
-        await safe_edit(
-            query,
-            text,
-            reply_markup=main_menu_keyboard(is_searching=True),
+        return
+
+    if matched:
+        await matcher.leave(user_id)
+        await db.set_state(user_id, STATE_SEARCHING)
+        await matcher.join(user_id, record["gender"], record["looking_for"])
+
+    stats = await stats_cache.get(context.bot_data["db"].get_stats)
+    text = await _search_screen(context, matcher, stats)
+    await safe_edit(
+        query,
+        text,
+        reply_markup=main_menu_keyboard(is_searching=True),
+    )
+    if query.message:
+        track_search_card(
+            context, user_id, query.message.chat_id, query.message.message_id
         )
-        if query.message:
-            track_search_card(
-                context, user_id, query.message.chat_id, query.message.message_id
-            )
-        await log_to_channel(
-            context,
-            config.log_channel_id,
-            db,
-            event="🔍 Search Started",
-            user=query.from_user,
-            persist_message=False,
-        )
+    await log_to_channel(
+        context,
+        config.log_channel_id,
+        db,
+        event="🔍 Search Started",
+        user=query.from_user,
+        persist_message=False,
+    )
 
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -215,20 +225,12 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if action == ACT_SKIP_FEEDBACK:
         pending = context.application.bot_data.get("pending_feedback", {})
         pending.pop(user.id, None)
-        record = await db.get_user(user.id)
-        if record and record.get("gender") and record.get("looking_for"):
-            online = await matcher.queue_size()
-            await safe_edit(
-                query,
-                READY.format(
-                    gender=gender_label(record["gender"]),
-                    looking=looking_label(record["looking_for"]),
-                    online=online,
-                ),
-                reply_markup=await menu_for_user(db, user.id),
-            )
-        else:
-            await safe_edit(query, SETUP_GENDER, reply_markup=gender_keyboard())
+        stats_cache = context.application.bot_data.get("stats_cache")
+        stats = await stats_cache.get(db.get_stats) if stats_cache else None
+        text, keyboard = await home_screen(
+            db, matcher, user.id, brand=config.brand_name, stats=stats
+        )
+        await safe_edit(query, text, reply_markup=keyboard)
         return
 
     if action == ACT_END_CHAT:
@@ -360,23 +362,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
 
     if action == ACT_BACK:
-        record = await db.get_user(user.id)
-        if record and record.get("gender") and record.get("looking_for"):
-            online = await matcher.queue_size()
-            await safe_edit(
-                query,
-                READY.format(
-                    gender=gender_label(record["gender"]),
-                    looking=looking_label(record["looking_for"]),
-                    online=online,
-                ),
-                reply_markup=await menu_for_user(db, user.id),
-            )
-        elif record and record.get("accepted_rules"):
-            await safe_edit(query, SETUP_GENDER, reply_markup=gender_keyboard())
-        else:
-            await safe_edit(
-                query,
-                WELCOME.format(brand=config.brand_name),
-                reply_markup=rules_keyboard(),
-            )
+        stats_cache = context.application.bot_data.get("stats_cache")
+        stats = await stats_cache.get(db.get_stats) if stats_cache else None
+        text, keyboard = await home_screen(
+            db, matcher, user.id, brand=config.brand_name, stats=stats
+        )
+        await safe_edit(query, text, reply_markup=keyboard)
+        return

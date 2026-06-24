@@ -149,7 +149,18 @@ class Matcher:
             if self.db:
                 record = await self.db.get_user(user_id, fresh=True)
                 if record and record.get("state") == STATE_CHATTING:
-                    return True, record.get("session_id")
+                    partner_id = record.get("partner_id")
+                    session_id = record.get("session_id")
+                    if partner_id and session_id:
+                        partner = await self.db.get_user(partner_id, fresh=True)
+                        if (
+                            partner
+                            and partner.get("state") == STATE_CHATTING
+                            and partner.get("partner_id") == user_id
+                            and partner.get("session_id") == session_id
+                        ):
+                            return True, session_id
+                    await self.db.set_state(user_id, STATE_IDLE, partner_id=None, session_id=None)
 
             if user_id in self._queue:
                 old = self._queue[user_id]

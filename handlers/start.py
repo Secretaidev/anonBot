@@ -3,11 +3,11 @@ from telegram.ext import ContextTypes
 
 from config import Config
 from database import Database
-from keyboards.buttons import gender_keyboard, looking_for_keyboard, main_menu_keyboard, rules_keyboard
+from keyboards.buttons import gender_keyboard, looking_for_keyboard, rules_keyboard
 from services.logger import log_to_channel
 from services.matcher import Matcher
-from utils.helpers import is_banned, menu_for_user
-from utils.texts import BANNED, READY, SETUP_GENDER, SETUP_LOOKING, WELCOME, gender_label, looking_label
+from utils.helpers import home_screen, is_banned
+from utils.texts import BANNED, SETUP_GENDER, SETUP_LOOKING, WELCOME
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -25,7 +25,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text(BANNED, parse_mode="HTML")
         return
 
-    record = await db.get_user(user.id)
+    record = await db.get_user(user.id, fresh=True)
 
     await log_to_channel(
         context,
@@ -56,16 +56,15 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
         return
 
-    online = await matcher.queue_size()
-    await update.message.reply_text(
-        READY.format(
-            gender=gender_label(record["gender"]),
-            looking=looking_label(record["looking_for"]),
-            online=online,
-        ),
-        parse_mode="HTML",
-        reply_markup=await menu_for_user(db, user.id),
+    stats_cache = context.application.bot_data.get("stats_cache")
+    stats = None
+    if stats_cache:
+        stats = await stats_cache.get(db.get_stats)
+
+    text, keyboard = await home_screen(
+        db, matcher, user.id, brand=config.brand_name, stats=stats
     )
+    await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
 
 
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -73,6 +72,7 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     db: Database = context.bot_data["db"]
+    config: Config = context.bot_data["config"]
     matcher: Matcher = context.bot_data["matcher"]
     user = update.effective_user
 
@@ -80,18 +80,17 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text(BANNED, parse_mode="HTML")
         return
 
-    record = await db.get_user(user.id)
+    record = await db.get_user(user.id, fresh=True)
     if not record or not record.get("gender") or not record.get("looking_for"):
         await start_command(update, context)
         return
 
-    online = await matcher.queue_size()
-    await update.message.reply_text(
-        READY.format(
-            gender=gender_label(record["gender"]),
-            looking=looking_label(record["looking_for"]),
-            online=online,
-        ),
-        parse_mode="HTML",
-        reply_markup=await menu_for_user(db, user.id),
+    stats_cache = context.application.bot_data.get("stats_cache")
+    stats = None
+    if stats_cache:
+        stats = await stats_cache.get(db.get_stats)
+
+    text, keyboard = await home_screen(
+        db, matcher, user.id, brand=config.brand_name, stats=stats
     )
+    await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)

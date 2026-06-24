@@ -1,3 +1,5 @@
+import logging
+
 from telegram.ext import ContextTypes
 
 from config import Config
@@ -5,8 +7,10 @@ from database import Database
 from keyboards.buttons import feedback_keyboard, main_menu_keyboard
 from services.logger import log_to_channel
 from services.matcher import Matcher, STATE_CHATTING, STATE_IDLE, STATE_SEARCHING
-from utils.helpers import chat_to_user, safe_send, untrack_search_card
+from utils.helpers import chat_to_user, is_valid_chat_session, safe_send, untrack_search_card
 from utils.texts import CHAT_ENDED, CHAT_NEXT, CHAT_PARTNER_LEFT, FEEDBACK, MATCHED, SEARCH_BLOCKED_RETRY
+
+logger = logging.getLogger(__name__)
 
 
 async def notify_matched(
@@ -49,6 +53,10 @@ async def notify_matched(
     stats_cache = context.bot_data.get("stats_cache")
     if stats_cache:
         stats_cache.invalidate()
+
+    if not await is_valid_chat_session(db, user_a):
+        logger.warning("match session invalid after connect: %s <-> %s", user_a, user_b)
+        return
 
     kb = main_menu_keyboard(is_chatting=True)
     for uid in (user_a, user_b):

@@ -6,13 +6,12 @@ from telegram.ext import ContextTypes
 
 from config import Config
 from database import Database
-from keyboards.buttons import main_menu_keyboard
-from services.logger import log_to_channel
-from services.matcher import STATE_CHATTING
 from handlers.session import end_chat
-from utils.helpers import is_banned, menu_for_user
+from services.logger import log_to_channel
+from services.matcher import Matcher
+from utils.helpers import home_screen, is_banned, is_valid_chat_session
 from utils.ratelimit import RateLimiter
-from utils.texts import BANNED, NOT_IN_CHAT, RATE_LIMITED, REPORT_SENT
+from utils.texts import BANNED, RATE_LIMITED, REPORT_SENT
 
 logger = logging.getLogger(__name__)
 
@@ -45,29 +44,32 @@ async def relay_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     user = update.effective_user
     db: Database = context.bot_data["db"]
     config: Config = context.bot_data["config"]
+    matcher: Matcher = context.bot_data["matcher"]
     limiter: RateLimiter = context.bot_data["rate_limiter"]
 
     if await is_banned(db, user.id):
         await update.message.reply_text(BANNED, parse_mode="HTML")
         return
 
-    record = await db.get_user(user.id)
-    if not record or record.get("state") != STATE_CHATTING:
-        await update.message.reply_text(
-            NOT_IN_CHAT,
-            parse_mode="HTML",
-            reply_markup=await menu_for_user(db, user.id),
+    if not await is_valid_chat_session(db, user.id):
+        stats_cache = context.application.bot_data.get("stats_cache")
+        stats = None
+        if stats_cache:
+            stats = await stats_cache.get(db.get_stats)
+        text, keyboard = await home_screen(
+            db, matcher, user.id, brand=config.brand_name, stats=stats
         )
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
         return
 
     if not await limiter.allow(user.id):
         await update.message.reply_text(RATE_LIMITED, parse_mode="HTML")
         return
 
-    partner_id = record.get("partner_id")
-    session_id = record.get("session_id")
+    record = await db.get_user(user.id, fresh=True)
+    partner_id = record.get("partner_id") if record else None
+    session_id = record.get("session_id") if record else None
     if not partner_id:
-        await update.message.reply_text(NOT_IN_CHAT, reply_markup=main_menu_keyboard())
         return
 
     msg = update.message
@@ -81,7 +83,8 @@ async def relay_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     try:
         await msg.copy(chat_id=partner_id)
-    except Exception:
+    except Exception as exc:
+        logger.warning("relay failed %s -> %s: %s", user.id, partner_id, exc)
         await update.message.reply_text("❌ Partner unavailable.")
         await end_chat(context, user.id, reason="partner_left")
         return
@@ -122,7 +125,7 @@ async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     db: Database = context.bot_data["db"]
     config: Config = context.bot_data["config"]
 
-    record = await db.get_user(user.id)
+    record = await db.get_user(user.id, fresh=True)
     partner_id = record.get("partner_id") if record else None
     session_id = record.get("session_id") if record else None
     reason = " ".join(context.args) if context.args else "No details provided"
@@ -147,6 +150,8 @@ async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         extra=f"Partner: {partner_id} | Reason: {reason}" if partner_id else f"Reason: {reason}",
         persist_message=False,
     )
+
+    from keyboards.buttons import main_menu_keyboard
 
     await update.message.reply_text(
         REPORT_SENT,

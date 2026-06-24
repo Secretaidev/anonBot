@@ -63,7 +63,7 @@ def looking_for_keyboard() -> InlineKeyboardMarkup:
                 _btn("👩 Girls", f"{CB_LOOKING}{LOOK_FEMALE}", style=S.PRIMARY),
             ],
             [_btn("🌍 Anyone", f"{CB_LOOKING}{LOOK_ANY}", style=S.SUCCESS)],
-            [_btn("⬅️ Back", f"{CB_ACTION}{ACT_BACK}")],
+            [_btn("⬅️ Back", f"{CB_ACTION}{ACT_BACK}", style=S.PRIMARY)],
         ]
     )
 
@@ -98,11 +98,11 @@ def main_menu_keyboard(
 
     rows.append(
         [
-            _btn("⚙️ Settings", f"{CB_ACTION}{ACT_SETTINGS}"),
+            _btn("⚙️ Settings", f"{CB_ACTION}{ACT_SETTINGS}", style=S.PRIMARY),
             _btn("📊 Stats", f"{CB_ACTION}{ACT_STATS}", style=S.SUCCESS),
         ]
     )
-    rows.append([_btn("❓ Help", f"{CB_ACTION}{ACT_HELP}")])
+    rows.append([_btn("❓ Help", f"{CB_ACTION}{ACT_HELP}", style=S.SUCCESS)])
 
     return InlineKeyboardMarkup(rows)
 
@@ -133,7 +133,7 @@ def report_keyboard() -> InlineKeyboardMarkup:
         [
             [
                 _btn("🚨 Submit Report", f"{CB_ACTION}{ACT_REPORT_CONFIRM}", style=S.DANGER),
-                _btn("❌ Cancel", f"{CB_ACTION}{ACT_BACK}"),
+                _btn("❌ Cancel", f"{CB_ACTION}{ACT_BACK}", style=S.PRIMARY),
             ]
         ]
     )

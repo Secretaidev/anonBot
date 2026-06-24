@@ -119,7 +119,7 @@ FEEDBACK = (
 FEEDBACK_THANKS = "⭐ Thanks for your feedback!"
 
 BANNED = "🚫 Your access has been restricted. Contact support if this is a mistake."
-NOT_IN_CHAT = "💡 Find a partner first — tap the blue button below."
+NOT_IN_CHAT = "💡 You're not in a chat yet. Tap 🔍 Find Partner to connect."
 RATE_LIMITED = "⏳ Slow down — you're sending messages too fast."
 REPORT_SENT = (
     "🚨 <b>Report submitted.</b>\n\n"

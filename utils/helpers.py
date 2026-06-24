@@ -2,13 +2,22 @@ import asyncio
 import logging
 from typing import Any
 
-from telegram import Chat, User
+from telegram import Chat, InlineKeyboardMarkup, User
 from telegram.error import BadRequest, Forbidden, RetryAfter, TelegramError
 from telegram.ext import ContextTypes
 
 from database import Database
-from keyboards.buttons import main_menu_keyboard
-from services.matcher import STATE_CHATTING, STATE_SEARCHING
+from keyboards.buttons import main_menu_keyboard, rules_keyboard
+from services.matcher import Matcher, STATE_CHATTING, STATE_IDLE, STATE_SEARCHING
+from utils.texts import (
+    MATCHED,
+    PULSE_FRAMES,
+    READY,
+    SEARCHING,
+    WELCOME,
+    gender_label,
+    looking_label,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,18 +76,91 @@ async def safe_send(
     return False
 
 
-async def menu_for_user(db: Database, user_id: int) -> Any:
-    record = await db.get_user(user_id)
+async def is_valid_chat_session(db: Database, user_id: int) -> bool:
+    """True only when user and partner are both actively in the same chat."""
+    record = await db.get_user(user_id, fresh=True)
+    if not record or record.get("state") != STATE_CHATTING:
+        return False
+    partner_id = record.get("partner_id")
+    session_id = record.get("session_id")
+    if not partner_id or not session_id:
+        return False
+    partner = await db.get_user(partner_id, fresh=True)
+    if not partner or partner.get("state") != STATE_CHATTING:
+        return False
+    return partner.get("partner_id") == user_id and partner.get("session_id") == session_id
+
+
+async def home_screen(
+    db: Database,
+    matcher: Matcher,
+    user_id: int,
+    *,
+    brand: str = "AnoyBot",
+    stats: dict | None = None,
+) -> tuple[str, InlineKeyboardMarkup]:
+    """Return the correct message + keyboard for the user's real state."""
+    record = await db.get_user(user_id, fresh=True)
+    if not record:
+        return WELCOME.format(brand=brand), rules_keyboard()
+
+    if not record.get("accepted_rules"):
+        return WELCOME.format(brand=brand), rules_keyboard()
+
+    gender = record.get("gender")
+    looking = record.get("looking_for")
+    state = record.get("state", STATE_IDLE)
+
+    if state == STATE_CHATTING:
+        if await is_valid_chat_session(db, user_id):
+            return MATCHED, main_menu_keyboard(is_chatting=True)
+        await db.set_state(user_id, STATE_IDLE, partner_id=None, session_id=None)
+        state = STATE_IDLE
+
+    if state == STATE_SEARCHING:
+        pulse_idx = 0
+        pulse = PULSE_FRAMES[pulse_idx % len(PULSE_FRAMES)]
+        searching_count = stats.get("searching", 0) if stats else 0
+        chatting_count = stats.get("chatting", 0) if stats else 0
+        queue = max(searching_count, await matcher.queue_size())
+        return (
+            SEARCHING.format(pulse=pulse, online=queue, chatting=chatting_count),
+            main_menu_keyboard(is_searching=True),
+        )
+
+    if not gender or not looking:
+        from utils.texts import SETUP_GENDER
+        from keyboards.buttons import gender_keyboard
+        return SETUP_GENDER, gender_keyboard()
+
+    queue = await matcher.queue_size()
+    if stats:
+        queue = max(stats.get("searching", 0), queue)
+    return (
+        READY.format(
+            gender=gender_label(gender),
+            looking=looking_label(looking),
+            online=queue,
+        ),
+        main_menu_keyboard(),
+    )
+
+
+async def menu_for_user(db: Database, user_id: int) -> InlineKeyboardMarkup:
+    record = await db.get_user(user_id, fresh=True)
     if not record:
         return main_menu_keyboard()
+    state = record.get("state", STATE_IDLE)
+    if state == STATE_CHATTING and not await is_valid_chat_session(db, user_id):
+        state = STATE_IDLE
     return main_menu_keyboard(
-        is_searching=record.get("state") == STATE_SEARCHING,
-        is_chatting=record.get("state") == STATE_CHATTING,
+        is_searching=state == STATE_SEARCHING,
+        is_chatting=state == STATE_CHATTING,
     )
 
 
 async def is_banned(db: Database, user_id: int) -> bool:
-    record = await db.get_user(user_id)
+    record = await db.get_user(user_id, fresh=True)
     return bool(record and record.get("is_banned"))
 
 
