@@ -144,7 +144,7 @@ async def _start_search(
 
 
 async def next_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Shortcut: /next = find new partner (like competitor bots)."""
+    """Shortcut: /next = find new partner."""
     if not update.effective_user or not update.message:
         return
 
@@ -164,6 +164,8 @@ async def next_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         _Query(update.message, update.effective_user),
     )
 
+
+async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     if not query or not query.data or not query.from_user:
         return
