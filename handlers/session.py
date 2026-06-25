@@ -11,7 +11,7 @@ from keyboards.buttons import feedback_keyboard, main_menu_keyboard
 from services.logger import log_to_channel_bg
 from services.matcher import Matcher, STATE_CHATTING, STATE_IDLE, STATE_SEARCHING
 from services.session_registry import SessionRegistry
-from utils.helpers import is_valid_chat_session
+from utils.helpers import _get_app, is_valid_chat_session
 from utils.status_card import untrack_status_card, update_status_card
 from utils.texts import (
     CHAT_ENDED,
@@ -65,9 +65,7 @@ async def notify_matched(
                 await update_status_card(context, uid, retry_text, reply_markup=retry_kb)
         return
 
-    untrack_status_card(context, user_a)
-    untrack_status_card(context, user_b)
-
+    # Keep tracked status card — edit in place on match
     await asyncio.gather(
         db.set_state(user_a, STATE_CHATTING, partner_id=user_b, session_id=session_id),
         db.set_state(user_b, STATE_CHATTING, partner_id=user_a, session_id=session_id),
@@ -143,10 +141,11 @@ async def end_chat(
     if reason == "next":
         ask_feedback = False
 
+    bot_data = _get_app(context).bot_data
     card_tasks = []
     if notify_initiator:
         if ask_feedback and session_id and reason in ("ended", "partner_left", "blocked"):
-            context.application.bot_data.setdefault("pending_feedback", {})[user_id] = session_id
+            bot_data.setdefault("pending_feedback", {})[user_id] = session_id
             card_tasks.append(
                 update_status_card(context, user_id, FEEDBACK, reply_markup=fb_kb)
             )
@@ -157,7 +156,7 @@ async def end_chat(
 
     if partner_id and reason not in ("partner_left",):
         if ask_feedback and session_id and reason != "next":
-            context.application.bot_data.setdefault("pending_feedback", {})[partner_id] = session_id
+            bot_data.setdefault("pending_feedback", {})[partner_id] = session_id
             card_tasks.append(
                 update_status_card(context, partner_id, FEEDBACK, reply_markup=fb_kb)
             )

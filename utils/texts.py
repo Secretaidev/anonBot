@@ -16,7 +16,7 @@ READY = (
     "Tap below to connect."
 )
 
-SEARCHING = "🔍 Finding someone… {pulse}"
+SEARCHING = "🔍 Finding someone…{pulse}"
 
 MATCHED = "🟢 <b>Connected</b> — chat below. Media works too."
 
@@ -63,7 +63,7 @@ STOP_CHAT = "Chat ended."
 GENDER_LABELS = {"male": "👨 Male", "female": "👩 Female", "other": "🌈 Other"}
 LOOKING_LABELS = {"male": "👨 Boys", "female": "👩 Girls", "any": "🌍 Anyone"}
 
-PULSE_FRAMES = ("", "·", "··", "···")
+PULSE_FRAMES = ("", " ·", " ··", " ···", " ····")
 
 
 def gender_label(value: str | None) -> str:

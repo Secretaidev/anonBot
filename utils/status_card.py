@@ -1,4 +1,4 @@
-"""Single pinned status card per user — edit in place, never spam the chat."""
+"""Single status card — always responds, never silent failures."""
 
 import logging
 from typing import Any
@@ -35,7 +35,7 @@ async def update_status_card(
     parse_mode: str | None = "HTML",
     reply_markup: Any = None,
 ) -> bool:
-    """Edit the user's status card, or send one if none exists yet."""
+    """Edit tracked status card, or send a new one."""
     app = _get_app(context)
     bot = app.bot
     cards = _cards(context)
@@ -55,6 +55,7 @@ async def update_status_card(
             msg = str(exc).lower()
             if "message is not modified" in msg:
                 return True
+            logger.info("status card edit failed uid=%s: %s", user_id, exc)
             cards.pop(user_id, None)
         except (Forbidden, TelegramError) as exc:
             logger.debug("status card edit %s: %s", user_id, exc)
@@ -70,5 +71,48 @@ async def update_status_card(
         cards[user_id] = (sent.chat_id, sent.message_id)
         return True
     except (Forbidden, TelegramError) as exc:
-        logger.debug("status card send %s: %s", user_id, exc)
+        logger.warning("status card send failed uid=%s: %s", user_id, exc)
         return False
+
+
+async def respond_card(
+    context,
+    user_id: int,
+    query: Any,
+    text: str,
+    *,
+    parse_mode: str | None = "HTML",
+    reply_markup: Any = None,
+) -> bool:
+    """Edit the button message first — fallback to status card send."""
+    if query and getattr(query, "message", None):
+        try:
+            await query.edit_message_text(
+                text,
+                parse_mode=parse_mode,
+                reply_markup=reply_markup,
+            )
+            track_status_card(
+                context,
+                user_id,
+                query.message.chat_id,
+                query.message.message_id,
+            )
+            return True
+        except BadRequest as exc:
+            msg = str(exc).lower()
+            if "message is not modified" in msg:
+                track_status_card(
+                    context,
+                    user_id,
+                    query.message.chat_id,
+                    query.message.message_id,
+                )
+                return True
+            logger.info("callback edit failed uid=%s: %s", user_id, exc)
+        except (Forbidden, TelegramError) as exc:
+            logger.warning("callback edit error uid=%s: %s", user_id, exc)
+
+    return await update_status_card(
+        context, user_id, text, parse_mode=parse_mode, reply_markup=reply_markup
+    )

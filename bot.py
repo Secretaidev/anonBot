@@ -22,7 +22,7 @@ from telegram.ext import (
 from config import Config, load_config
 from database import Database
 from handlers.admin import admin_ban, admin_broadcast, admin_stats, admin_unban, admin_user
-from handlers.callbacks import callback_handler
+from handlers.callbacks import callback_handler, next_command
 from handlers.panel import panel_callback, panel_command
 from handlers.chat import link_command, relay_message, report_command
 from handlers.errors import error_handler
@@ -210,6 +210,7 @@ def _build_application(config) -> Application:
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("menu", menu_command))
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("next", next_command))
     app.add_handler(CommandHandler("stop", stop_command))
     app.add_handler(CommandHandler("report", report_command))
     app.add_handler(CommandHandler("link", link_command))

@@ -9,7 +9,17 @@ Stats, Help, Admin tools are ONLY in /panel.
 """
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.constants import KeyboardButtonStyle as S
+
+
+class _S:
+    """Stub — colored inline buttons need Bot API 9.4+; plain buttons work everywhere."""
+
+    PRIMARY = None
+    SUCCESS = None
+    DANGER = None
+
+
+S = _S
 
 # ── User callback prefixes ──
 CB_GENDER = "g:"
@@ -80,7 +90,8 @@ PERM_LABELS = {k: v for k, v in ALL_PERMISSIONS}
 
 
 def _btn(text: str, data: str, *, style: str | None = None) -> InlineKeyboardButton:
-    return InlineKeyboardButton(text, callback_data=data, style=style)
+    """Plain buttons — works on every Telegram client/API version."""
+    return InlineKeyboardButton(text, callback_data=data)
 
 
 # ═══════════════════════════════════════════════════════════════
