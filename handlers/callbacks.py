@@ -380,5 +380,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
 
     if action == ACT_STATS or action == ACT_HELP:
+        from utils.texts import HELP as HELP_TEXT
+        if action == ACT_HELP:
+            await respond_card(
+                context, user.id, query, HELP_TEXT, reply_markup=main_menu_keyboard()
+            )
+            return
         text, keyboard = await home_screen(db, matcher, user.id, brand=config.brand_name)
         await respond_card(context, user.id, query, text, reply_markup=keyboard)

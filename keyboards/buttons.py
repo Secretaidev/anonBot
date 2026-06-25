@@ -1,25 +1,20 @@
-"""Premium inline keyboards — clean, minimal, professional.
+"""Premium inline keyboards — colorful styled buttons with plain fallback.
 
-Regular users see ONLY what they need:
-  • Idle: Find Partner + Settings
-  • Searching: Cancel
-  • Chatting: End/Next + Report/Block
-
-Stats, Help, Admin tools are ONLY in /panel.
+Bot API 9.4+ → blue / green / red styled buttons.
+Older clients → auto-falls back to plain buttons on send/edit errors.
 """
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+try:
+    from telegram.constants import KeyboardButtonStyle as S
+except ImportError:  # pragma: no cover
 
-class _S:
-    """Stub — colored inline buttons need Bot API 9.4+; plain buttons work everywhere."""
+    class S:  # type: ignore[no-redef]
+        PRIMARY = "primary"
+        SUCCESS = "success"
+        DANGER = "danger"
 
-    PRIMARY = None
-    SUCCESS = None
-    DANGER = None
-
-
-S = _S
 
 # ── User callback prefixes ──
 CB_GENDER = "g:"
@@ -27,7 +22,6 @@ CB_LOOKING = "l:"
 CB_ACTION = "a:"
 CB_RATE = "r:"
 
-# ── Panel callback prefix ──
 CB_PANEL = "p:"
 
 GENDER_MALE = "male"
@@ -54,7 +48,6 @@ ACT_REPORT_CONFIRM = "report_confirm"
 ACT_BLOCK = "block"
 ACT_SKIP_FEEDBACK = "skip_feedback"
 
-# ── Panel actions ──
 PA_MAIN = "main"
 PA_STATS = "stats"
 PA_USERS = "users"
@@ -64,18 +57,17 @@ PA_USER_UNBAN = "uu"
 PA_BROADCAST = "bc"
 PA_ADMINS = "adm"
 PA_ADMIN_ADD = "aa"
-PA_ADMIN_RM = "ar"       # + :uid
-PA_ADMIN_RM_YES = "ary"  # + :uid
-PA_ADMIN_EDIT = "ae"     # + :uid
-PA_PERM_TOGGLE = "pt"    # + :uid:perm
-PA_PERM_ALL = "pa"       # + :uid  (select all / deselect all)
-PA_SAVE_ADMIN = "sa"     # + :uid
+PA_ADMIN_RM = "ar"
+PA_ADMIN_RM_YES = "ary"
+PA_ADMIN_EDIT = "ae"
+PA_PERM_TOGGLE = "pt"
+PA_PERM_ALL = "pa"
+PA_SAVE_ADMIN = "sa"
 PA_REPORTS = "rp"
 PA_QUEUE = "qu"
-PA_FORCE_DC = "fd"       # + :uid
+PA_FORCE_DC = "fd"
 PA_HOME = "home"
 
-# ── Permission definitions ──
 ALL_PERMISSIONS = [
     ("stats", "📊 Stats"),
     ("user_lookup", "👤 Lookup"),
@@ -90,18 +82,30 @@ PERM_LABELS = {k: v for k, v in ALL_PERMISSIONS}
 
 
 def _btn(text: str, data: str, *, style: str | None = None) -> InlineKeyboardButton:
-    """Plain buttons — works on every Telegram client/API version."""
+    if style is not None:
+        return InlineKeyboardButton(text, callback_data=data, style=style)
     return InlineKeyboardButton(text, callback_data=data)
 
 
+def strip_styles(markup: InlineKeyboardMarkup | None) -> InlineKeyboardMarkup | None:
+    """Rebuild keyboard without colors — used when Telegram rejects styled buttons."""
+    if markup is None:
+        return None
+    rows = [
+        [InlineKeyboardButton(b.text, callback_data=b.callback_data) for b in row]
+        for row in markup.inline_keyboard
+    ]
+    return InlineKeyboardMarkup(rows)
+
+
 # ═══════════════════════════════════════════════════════════════
-# User keyboards — clean, minimal, professional
+# User keyboards
 # ═══════════════════════════════════════════════════════════════
 
 def rules_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [[_btn("✅ I Accept the Rules", f"{CB_ACTION}{ACT_ACCEPT_RULES}", style=S.SUCCESS)]]
-    )
+    return InlineKeyboardMarkup([
+        [_btn("✅ I Accept — Let's Go!", f"{CB_ACTION}{ACT_ACCEPT_RULES}", style=S.SUCCESS)],
+    ])
 
 
 def gender_keyboard() -> InlineKeyboardMarkup:
@@ -128,12 +132,11 @@ def main_menu_keyboard(
     is_searching: bool = False,
     is_chatting: bool = False,
 ) -> InlineKeyboardMarkup:
-    """Clean main menu — users see ONLY what they need."""
     rows: list[list[InlineKeyboardButton]] = []
 
     if is_chatting:
         rows.append([
-            _btn("🔴 End Chat", f"{CB_ACTION}{ACT_END_CHAT}", style=S.DANGER),
+            _btn("🔴 End", f"{CB_ACTION}{ACT_END_CHAT}", style=S.DANGER),
             _btn("⏭ Next", f"{CB_ACTION}{ACT_NEXT}", style=S.PRIMARY),
         ])
         rows.append([
@@ -141,43 +144,44 @@ def main_menu_keyboard(
             _btn("🚫 Block", f"{CB_ACTION}{ACT_BLOCK}", style=S.DANGER),
         ])
     elif is_searching:
-        rows.append(
-            [_btn("🛑 Cancel Search", f"{CB_ACTION}{ACT_STOP_SEARCH}", style=S.DANGER)]
-        )
+        rows.append([
+            _btn("🛑 Cancel Search", f"{CB_ACTION}{ACT_STOP_SEARCH}", style=S.DANGER),
+        ])
     else:
-        rows.append(
-            [_btn("🔍 Find Partner", f"{CB_ACTION}{ACT_FIND}", style=S.PRIMARY)]
-        )
-        rows.append(
-            [_btn("⚙️ Settings", f"{CB_ACTION}{ACT_SETTINGS}", style=S.PRIMARY)]
-        )
+        rows.append([
+            _btn("🔍  Find Partner", f"{CB_ACTION}{ACT_FIND}", style=S.SUCCESS),
+        ])
+        rows.append([
+            _btn("⚙️ Settings", f"{CB_ACTION}{ACT_SETTINGS}", style=S.PRIMARY),
+            _btn("❓ Help", f"{CB_ACTION}{ACT_HELP}", style=S.PRIMARY),
+        ])
 
     return InlineKeyboardMarkup(rows)
 
 
 def settings_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [_btn("🎭 Change Gender", f"{CB_ACTION}{ACT_CHANGE_GENDER}", style=S.PRIMARY)],
-        [_btn("💫 Change Preference", f"{CB_ACTION}{ACT_CHANGE_LOOKING}", style=S.PRIMARY)],
-        [_btn("⬅️ Back", f"{CB_ACTION}{ACT_BACK}", style=S.PRIMARY)],
+        [_btn("🎭 Gender", f"{CB_ACTION}{ACT_CHANGE_GENDER}", style=S.PRIMARY)],
+        [_btn("💫 Preference", f"{CB_ACTION}{ACT_CHANGE_LOOKING}", style=S.PRIMARY)],
+        [_btn("⬅️ Back", f"{CB_ACTION}{ACT_BACK}", style=S.SUCCESS)],
     ])
 
 
 def confirm_end_chat_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
-            _btn("✅ Yes, End Chat", f"{CB_ACTION}{ACT_END_CHAT}:confirm", style=S.DANGER),
-            _btn("❌ Cancel", f"{CB_ACTION}{ACT_BACK}", style=S.SUCCESS),
-        ]
+            _btn("✅ Yes, End", f"{CB_ACTION}{ACT_END_CHAT}:confirm", style=S.DANGER),
+            _btn("❌ Stay", f"{CB_ACTION}{ACT_BACK}", style=S.SUCCESS),
+        ],
     ])
 
 
 def report_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
-            _btn("🚨 Submit Report", f"{CB_ACTION}{ACT_REPORT_CONFIRM}", style=S.DANGER),
+            _btn("🚨 Report", f"{CB_ACTION}{ACT_REPORT_CONFIRM}", style=S.DANGER),
             _btn("❌ Cancel", f"{CB_ACTION}{ACT_BACK}", style=S.PRIMARY),
-        ]
+        ],
     ])
 
 
@@ -192,12 +196,12 @@ def feedback_keyboard() -> InlineKeyboardMarkup:
             _btn("⭐⭐⭐⭐", f"{CB_RATE}4", style=S.SUCCESS),
             _btn("⭐⭐⭐⭐⭐", f"{CB_RATE}5", style=S.SUCCESS),
         ],
-        [_btn("Skip", f"{CB_ACTION}{ACT_SKIP_FEEDBACK}", style=S.DANGER)],
+        [_btn("Skip ⏭", f"{CB_ACTION}{ACT_SKIP_FEEDBACK}", style=S.DANGER)],
     ])
 
 
 # ═══════════════════════════════════════════════════════════════
-# Panel keyboards (Owner + Admin)
+# Panel keyboards
 # ═══════════════════════════════════════════════════════════════
 
 def _pbtn(text: str, action: str, *, style: str | None = None) -> InlineKeyboardButton:
@@ -272,7 +276,6 @@ def admin_list_keyboard(
     owner_ids: frozenset[int],
     names: dict[int, str] | None = None,
 ) -> InlineKeyboardMarkup:
-    """Admin list with names resolved from DB."""
     names = names or {}
     rows: list[list[InlineKeyboardButton]] = []
     for adm in admins:
@@ -299,8 +302,6 @@ def permission_editor_keyboard(
     current_perms: list[str],
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
-
-    # ── Select All / Deselect All toggle ──
     all_keys = [k for k, _ in ALL_PERMISSIONS]
     all_selected = all(k in current_perms for k in all_keys)
     if all_selected:
@@ -308,7 +309,6 @@ def permission_editor_keyboard(
     else:
         rows.append([_pbtn("✅ Select All", f"{PA_PERM_ALL}:{target_uid}", style=S.SUCCESS)])
 
-    # ── Individual permission toggles ──
     for perm_key, perm_label in ALL_PERMISSIONS:
         is_on = perm_key in current_perms
         icon = "✅" if is_on else "❌"

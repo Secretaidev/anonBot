@@ -1,10 +1,11 @@
-"""Single status card — always responds, never silent failures."""
+"""Single status card — colorful buttons with automatic plain fallback."""
 
 import logging
 from typing import Any
 
 from telegram.error import BadRequest, Forbidden, TelegramError
 
+from keyboards.buttons import strip_styles
 from utils.helpers import _get_app
 
 logger = logging.getLogger(__name__)
@@ -27,6 +28,58 @@ def get_status_card(context, user_id: int) -> tuple[int, int] | None:
     return _cards(context).get(user_id)
 
 
+async def _edit_or_send(
+    bot,
+    *,
+    user_id: int,
+    text: str,
+    chat_id: int | None = None,
+    message_id: int | None = None,
+    parse_mode: str | None = "HTML",
+    reply_markup: Any = None,
+) -> tuple[bool, int | None, int | None]:
+    """Styled keyboard first; plain fallback if Telegram rejects colors."""
+
+    markups = [reply_markup]
+    plain = strip_styles(reply_markup)
+    if plain is not reply_markup:
+        markups.append(plain)
+
+    last_exc: Exception | None = None
+    for markup in markups:
+        try:
+            if chat_id is not None and message_id is not None:
+                await bot.edit_message_text(
+                    text,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    parse_mode=parse_mode,
+                    reply_markup=markup,
+                )
+                return True, chat_id, message_id
+            sent = await bot.send_message(
+                user_id,
+                text,
+                parse_mode=parse_mode,
+                reply_markup=markup,
+            )
+            return True, sent.chat_id, sent.message_id
+        except BadRequest as exc:
+            msg = str(exc).lower()
+            if "message is not modified" in msg and chat_id and message_id:
+                return True, chat_id, message_id
+            last_exc = exc
+            logger.info("markup attempt failed uid=%s: %s", user_id, exc)
+            continue
+        except (Forbidden, TelegramError) as exc:
+            logger.warning("status card failed uid=%s: %s", user_id, exc)
+            return False, None, None
+
+    if last_exc:
+        logger.warning("all markup attempts failed uid=%s: %s", user_id, last_exc)
+    return False, None, None
+
+
 async def update_status_card(
     context,
     user_id: int,
@@ -35,44 +88,24 @@ async def update_status_card(
     parse_mode: str | None = "HTML",
     reply_markup: Any = None,
 ) -> bool:
-    """Edit tracked status card, or send a new one."""
     app = _get_app(context)
-    bot = app.bot
     cards = _cards(context)
+    chat_id, msg_id = cards.get(user_id, (None, None))
 
-    if user_id in cards:
-        chat_id, msg_id = cards[user_id]
-        try:
-            await bot.edit_message_text(
-                text,
-                chat_id=chat_id,
-                message_id=msg_id,
-                parse_mode=parse_mode,
-                reply_markup=reply_markup,
-            )
-            return True
-        except BadRequest as exc:
-            msg = str(exc).lower()
-            if "message is not modified" in msg:
-                return True
-            logger.info("status card edit failed uid=%s: %s", user_id, exc)
-            cards.pop(user_id, None)
-        except (Forbidden, TelegramError) as exc:
-            logger.debug("status card edit %s: %s", user_id, exc)
-            cards.pop(user_id, None)
-
-    try:
-        sent = await bot.send_message(
-            user_id,
-            text,
-            parse_mode=parse_mode,
-            reply_markup=reply_markup,
-        )
-        cards[user_id] = (sent.chat_id, sent.message_id)
-        return True
-    except (Forbidden, TelegramError) as exc:
-        logger.warning("status card send failed uid=%s: %s", user_id, exc)
-        return False
+    ok, new_chat, new_msg = await _edit_or_send(
+        app.bot,
+        user_id=user_id,
+        text=text,
+        chat_id=chat_id,
+        message_id=msg_id,
+        parse_mode=parse_mode,
+        reply_markup=reply_markup,
+    )
+    if ok and new_chat is not None and new_msg is not None:
+        cards[user_id] = (new_chat, new_msg)
+    elif not ok:
+        cards.pop(user_id, None)
+    return ok
 
 
 async def respond_card(
@@ -84,35 +117,21 @@ async def respond_card(
     parse_mode: str | None = "HTML",
     reply_markup: Any = None,
 ) -> bool:
-    """Edit the button message first — fallback to status card send."""
+    chat_id = message_id = None
     if query and getattr(query, "message", None):
-        try:
-            await query.edit_message_text(
-                text,
-                parse_mode=parse_mode,
-                reply_markup=reply_markup,
-            )
-            track_status_card(
-                context,
-                user_id,
-                query.message.chat_id,
-                query.message.message_id,
-            )
-            return True
-        except BadRequest as exc:
-            msg = str(exc).lower()
-            if "message is not modified" in msg:
-                track_status_card(
-                    context,
-                    user_id,
-                    query.message.chat_id,
-                    query.message.message_id,
-                )
-                return True
-            logger.info("callback edit failed uid=%s: %s", user_id, exc)
-        except (Forbidden, TelegramError) as exc:
-            logger.warning("callback edit error uid=%s: %s", user_id, exc)
+        chat_id = query.message.chat_id
+        message_id = query.message.message_id
 
-    return await update_status_card(
-        context, user_id, text, parse_mode=parse_mode, reply_markup=reply_markup
+    app = _get_app(context)
+    ok, new_chat, new_msg = await _edit_or_send(
+        app.bot,
+        user_id=user_id,
+        text=text,
+        chat_id=chat_id,
+        message_id=message_id,
+        parse_mode=parse_mode,
+        reply_markup=reply_markup,
     )
+    if ok and new_chat is not None and new_msg is not None:
+        track_status_card(context, user_id, new_chat, new_msg)
+    return ok
