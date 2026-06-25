@@ -1,7 +1,4 @@
-"""Handler for /start and /menu commands.
-
-Speed: fire-and-forget logging, no blocking on channel log.
-"""
+"""Handler for /start and /menu — one status card, no clutter."""
 
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -12,6 +9,7 @@ from keyboards.buttons import gender_keyboard, looking_for_keyboard, rules_keybo
 from services.logger import log_to_channel_bg
 from services.matcher import Matcher
 from utils.helpers import home_screen, is_banned
+from utils.status_card import update_status_card
 from utils.texts import BANNED, SETUP_GENDER, SETUP_LOOKING, WELCOME
 
 
@@ -34,7 +32,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     record = await db.get_user(user.id, fresh=True)
 
-    # Fire-and-forget — don't block the /start response
     log_to_channel_bg(
         context,
         config.log_channel_id,
@@ -45,27 +42,28 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     )
 
     if not record or not record.get("accepted_rules"):
-        await update.message.reply_text(
+        await update_status_card(
+            context,
+            user.id,
             WELCOME.format(brand=config.brand_name),
-            parse_mode="HTML",
             reply_markup=rules_keyboard(),
         )
         return
 
     if not record.get("gender"):
-        await update.message.reply_text(
-            SETUP_GENDER, parse_mode="HTML", reply_markup=gender_keyboard()
+        await update_status_card(
+            context, user.id, SETUP_GENDER, reply_markup=gender_keyboard()
         )
         return
 
     if not record.get("looking_for"):
-        await update.message.reply_text(
-            SETUP_LOOKING, parse_mode="HTML", reply_markup=looking_for_keyboard()
+        await update_status_card(
+            context, user.id, SETUP_LOOKING, reply_markup=looking_for_keyboard()
         )
         return
 
     text, keyboard = await home_screen(db, matcher, user.id, brand=config.brand_name)
-    await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
+    await update_status_card(context, user.id, text, reply_markup=keyboard)
 
 
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -87,7 +85,7 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     text, keyboard = await home_screen(db, matcher, user.id, brand=config.brand_name)
-    await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
+    await update_status_card(context, user.id, text, reply_markup=keyboard)
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -95,7 +93,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     from utils.texts import HELP
     from keyboards.buttons import main_menu_keyboard
-    await update.message.reply_text(
-        HELP, parse_mode="HTML", reply_markup=main_menu_keyboard()
-    )
 
+    await update_status_card(
+        context,
+        update.effective_user.id,
+        HELP,
+        reply_markup=main_menu_keyboard(),
+    )

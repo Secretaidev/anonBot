@@ -44,9 +44,8 @@ from utils.helpers import (
     is_banned,
     is_valid_chat_session,
     safe_edit,
-    track_search_card,
-    untrack_search_card,
 )
+from utils.status_card import track_status_card, untrack_status_card
 from utils.texts import (
     BANNED,
     CONFIRM_END,
@@ -104,7 +103,6 @@ async def _start_search(
         stats_cache.invalidate()
 
     if matched and await is_valid_chat_session(db, user_id, fresh=True):
-        untrack_search_card(context, user_id)
         await safe_edit(
             query,
             PARTNER_FOUND_HINT,
@@ -125,7 +123,7 @@ async def _start_search(
         reply_markup=main_menu_keyboard(is_searching=True),
     )
     if query.message:
-        track_search_card(
+        track_status_card(
             context, user_id, query.message.chat_id, query.message.message_id
         )
     await log_to_channel(
@@ -144,6 +142,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
 
     await query.answer()
+    setattr(query, "_ctx", context)
     data = query.data
     user = query.from_user
     db: Database = context.bot_data["db"]
@@ -235,8 +234,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
 
     if action == f"{ACT_END_CHAT}:confirm":
-        await end_chat(context, user.id, reason="ended", notify_initiator=False)
-        await safe_edit(query, "🔴 Chat ended.", reply_markup=main_menu_keyboard())
+        await end_chat(context, user.id, reason="ended", notify_initiator=True)
         return
 
     if action == ACT_FIND:
@@ -246,7 +244,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if action == ACT_STOP_SEARCH:
         await matcher.leave(user.id)
         await db.set_state(user.id, STATE_IDLE)
-        untrack_search_card(context, user.id)
+        untrack_status_card(context, user.id)
         stats_cache = context.application.bot_data.get("stats_cache")
         if stats_cache:
             stats_cache.invalidate()
@@ -254,7 +252,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
 
     if action == ACT_NEXT:
-        await end_chat(context, user.id, reason="next", notify_initiator=False)
+        await end_chat(context, user.id, reason="next", notify_initiator=False, ask_feedback=False)
         await _start_search(context, user.id, query)
         return
 

@@ -1,11 +1,4 @@
-"""Session lifecycle — match notification, chat end, feedback.
-
-Speed optimizations:
-  • Parallel set_state() for both users via asyncio.gather()
-  • Fire-and-forget logging — never blocks response
-  • get_chat() in background — doesn't delay match notification
-  • Double end-chat guard with fresh state check
-"""
+"""Session lifecycle — one status card, zero chat spam."""
 
 import asyncio
 import logging
@@ -18,13 +11,22 @@ from keyboards.buttons import feedback_keyboard, main_menu_keyboard
 from services.logger import log_to_channel_bg
 from services.matcher import Matcher, STATE_CHATTING, STATE_IDLE, STATE_SEARCHING
 from services.session_registry import SessionRegistry
-from utils.helpers import is_valid_chat_session, safe_send, untrack_search_card
+from utils.helpers import is_valid_chat_session
+from utils.status_card import untrack_status_card, update_status_card
 from utils.texts import (
-    CHAT_ENDED, CHAT_NEXT, CHAT_PARTNER_LEFT,
-    FEEDBACK, MATCHED, SEARCH_BLOCKED_RETRY,
+    CHAT_ENDED,
+    CHAT_PARTNER_LEFT,
+    FEEDBACK,
+    MATCHED,
+    PULSE_FRAMES,
+    SEARCH_BLOCKED_RETRY,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _pulse() -> str:
+    return PULSE_FRAMES[0]
 
 
 async def notify_matched(
@@ -36,16 +38,18 @@ async def notify_matched(
     db: Database = context.bot_data["db"]
     config: Config = context.bot_data["config"]
     matcher: Matcher = context.bot_data["matcher"]
+    kb = main_menu_keyboard(is_chatting=True)
 
     if await db.is_blocked(user_a, user_b) or await db.is_blocked(user_b, user_a):
-        # Parallel reset for both users
         await asyncio.gather(
             db.set_state(user_a, STATE_IDLE),
             db.set_state(user_b, STATE_IDLE),
         )
-        untrack_search_card(context, user_a)
-        untrack_search_card(context, user_b)
+        untrack_status_card(context, user_a)
+        untrack_status_card(context, user_b)
 
+        retry_kb = main_menu_keyboard(is_searching=True)
+        retry_text = SEARCH_BLOCKED_RETRY.format(pulse=_pulse())
         for uid in (user_a, user_b):
             record = await db.get_user(uid, fresh=True)
             if not record:
@@ -53,18 +57,17 @@ async def notify_matched(
             gender = record.get("gender")
             looking = record.get("looking_for")
             if not gender or not looking:
-                await safe_send(context, uid, SEARCH_BLOCKED_RETRY, reply_markup=main_menu_keyboard())
+                await update_status_card(context, uid, retry_text, reply_markup=main_menu_keyboard())
                 continue
             await db.set_state(uid, STATE_SEARCHING)
             matched, _ = await matcher.join(uid, gender, looking)
             if not matched:
-                await safe_send(context, uid, SEARCH_BLOCKED_RETRY, reply_markup=main_menu_keyboard(is_searching=True))
+                await update_status_card(context, uid, retry_text, reply_markup=retry_kb)
         return
 
-    untrack_search_card(context, user_a)
-    untrack_search_card(context, user_b)
+    untrack_status_card(context, user_a)
+    untrack_status_card(context, user_b)
 
-    # Parallel: set both users + create session simultaneously
     await asyncio.gather(
         db.set_state(user_a, STATE_CHATTING, partner_id=user_b, session_id=session_id),
         db.set_state(user_b, STATE_CHATTING, partner_id=user_a, session_id=session_id),
@@ -82,14 +85,11 @@ async def notify_matched(
     registry: SessionRegistry = context.bot_data["session_registry"]
     registry.connect(user_a, user_b, session_id)
 
-    # Send match notifications in parallel
-    kb = main_menu_keyboard(is_chatting=True)
     await asyncio.gather(
-        safe_send(context, user_a, MATCHED, reply_markup=kb),
-        safe_send(context, user_b, MATCHED, reply_markup=kb),
+        update_status_card(context, user_a, MATCHED, reply_markup=kb),
+        update_status_card(context, user_b, MATCHED, reply_markup=kb),
     )
 
-    # Fire-and-forget logging
     log_to_channel_bg(
         context,
         config.log_channel_id,
@@ -100,11 +100,6 @@ async def notify_matched(
     )
 
 
-async def _send_feedback(context: ContextTypes.DEFAULT_TYPE, user_id: int, session_id: str) -> None:
-    context.application.bot_data.setdefault("pending_feedback", {})[user_id] = session_id
-    await safe_send(context, user_id, FEEDBACK, reply_markup=feedback_keyboard())
-
-
 async def end_chat(
     context: ContextTypes.DEFAULT_TYPE,
     user_id: int,
@@ -113,14 +108,14 @@ async def end_chat(
     notify_initiator: bool = True,
     ask_feedback: bool = True,
 ) -> None:
-    """End chat with double-execution guard + parallel resets."""
+    """End chat — updates status card only, never floods chat with system msgs."""
     db: Database = context.bot_data["db"]
     config: Config = context.bot_data["config"]
     matcher: Matcher = context.bot_data["matcher"]
 
     record = await db.get_user(user_id, fresh=True)
     if not record or record.get("state") != STATE_CHATTING:
-        return  # Already ended — no-op
+        return
 
     partner_id = record.get("partner_id")
     session_id = record.get("session_id")
@@ -128,7 +123,6 @@ async def end_chat(
     registry: SessionRegistry = context.bot_data["session_registry"]
     registry.disconnect(user_id)
 
-    # Parallel reset — prevents double-execution race
     reset_tasks = [db.set_state(user_id, STATE_IDLE, partner_id=None, session_id=None)]
     if partner_id:
         reset_tasks.append(db.set_state(partner_id, STATE_IDLE, partner_id=None, session_id=None))
@@ -143,36 +137,38 @@ async def end_chat(
             lambda t: logger.debug("end_session err: %s", t.exception()) if not t.cancelled() and t.exception() else None
         )
 
-    kb = main_menu_keyboard()
-    messages = {
-        "ended": CHAT_ENDED,
-        "next": CHAT_NEXT,
-        "partner_left": CHAT_PARTNER_LEFT,
-        "blocked": CHAT_ENDED,
-    }
+    kb_home = main_menu_keyboard()
+    fb_kb = feedback_keyboard()
 
-    # Send notifications in parallel
-    send_tasks = []
+    if reason == "next":
+        ask_feedback = False
+
+    card_tasks = []
     if notify_initiator:
-        send_tasks.append(safe_send(context, user_id, messages.get(reason, CHAT_ENDED), reply_markup=kb))
-    if partner_id and reason not in ("partner_left",):
-        send_tasks.append(safe_send(context, partner_id, CHAT_PARTNER_LEFT, reply_markup=kb))
-    if send_tasks:
-        await asyncio.gather(*send_tasks)
-
-    # Feedback
-    if ask_feedback and session_id and reason in ("ended", "next", "partner_left", "blocked"):
-        feedback_tasks = []
-        if reason == "blocked":
-            feedback_tasks.append(_send_feedback(context, user_id, session_id))
+        if ask_feedback and session_id and reason in ("ended", "partner_left", "blocked"):
+            context.application.bot_data.setdefault("pending_feedback", {})[user_id] = session_id
+            card_tasks.append(
+                update_status_card(context, user_id, FEEDBACK, reply_markup=fb_kb)
+            )
         else:
-            if partner_id:
-                feedback_tasks.append(_send_feedback(context, partner_id, session_id))
-            feedback_tasks.append(_send_feedback(context, user_id, session_id))
-        if feedback_tasks:
-            await asyncio.gather(*feedback_tasks)
+            card_tasks.append(
+                update_status_card(context, user_id, CHAT_ENDED, reply_markup=kb_home)
+            )
 
-    # Fire-and-forget cleanup
+    if partner_id and reason not in ("partner_left",):
+        if ask_feedback and session_id and reason != "next":
+            context.application.bot_data.setdefault("pending_feedback", {})[partner_id] = session_id
+            card_tasks.append(
+                update_status_card(context, partner_id, FEEDBACK, reply_markup=fb_kb)
+            )
+        else:
+            card_tasks.append(
+                update_status_card(context, partner_id, CHAT_PARTNER_LEFT, reply_markup=kb_home)
+            )
+
+    if card_tasks:
+        await asyncio.gather(*card_tasks)
+
     log_to_channel_bg(
         context,
         config.log_channel_id,
@@ -182,7 +178,6 @@ async def end_chat(
         persist_message=False,
     )
 
-    untrack_search_card(context, user_id)
     await matcher.leave(user_id)
     if partner_id:
         await matcher.leave(partner_id)

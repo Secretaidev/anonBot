@@ -90,6 +90,7 @@ async def safe_edit(
     query: Any,
     text: str,
     *,
+    context: ContextTypes.DEFAULT_TYPE | None = None,
     parse_mode: str | None = "HTML",
     reply_markup: Any = None,
 ) -> bool:
@@ -98,6 +99,15 @@ async def safe_edit(
         await query.edit_message_text(
             text, parse_mode=parse_mode, reply_markup=reply_markup
         )
+        ctx = context or getattr(query, "_ctx", None)
+        if ctx and query.from_user and query.message:
+            from utils.status_card import track_status_card
+            track_status_card(
+                ctx,
+                query.from_user.id,
+                query.message.chat_id,
+                query.message.message_id,
+            )
         return True
     except BadRequest as exc:
         msg = str(exc).lower()
@@ -220,19 +230,3 @@ async def is_banned(db: Database, user_id: int) -> bool:
     record = await db.get_user(user_id)
     return bool(record and record.get("is_banned"))
 
-
-def track_search_card(
-    context,
-    user_id: int,
-    chat_id: int,
-    message_id: int,
-) -> None:
-    app = _get_app(context)
-    cards: dict = app.bot_data.setdefault("search_cards", {})
-    cards[user_id] = (chat_id, message_id)
-
-
-def untrack_search_card(context, user_id: int) -> None:
-    app = _get_app(context)
-    cards: dict = app.bot_data.get("search_cards", {})
-    cards.pop(user_id, None)

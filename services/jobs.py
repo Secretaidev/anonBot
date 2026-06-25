@@ -30,6 +30,7 @@ async def setup_bot_commands(application: Application) -> None:
             BotCommand("help", "How it works"),
             BotCommand("stop", "End chat or cancel search"),
             BotCommand("report", "Report abuse"),
+            BotCommand("link", "Share your profile safely"),
             BotCommand("panel", "Admin / Owner panel"),
         ]
     )
@@ -65,7 +66,7 @@ async def search_pulse_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Animate search screens for waiting users — minimal server load."""
     app = context.application
     db: Database = app.bot_data["db"]
-    cards: dict = app.bot_data.get("search_cards", {})
+    cards: dict = app.bot_data.get("status_cards", {})
     if not cards:
         return
 

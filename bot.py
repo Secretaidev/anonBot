@@ -24,7 +24,7 @@ from database import Database
 from handlers.admin import admin_ban, admin_broadcast, admin_stats, admin_unban, admin_user
 from handlers.callbacks import callback_handler
 from handlers.panel import panel_callback, panel_command
-from handlers.chat import relay_message, report_command
+from handlers.chat import link_command, relay_message, report_command
 from handlers.errors import error_handler
 from handlers.session import notify_matched
 from handlers.start import help_command, menu_command, start_command
@@ -35,7 +35,7 @@ from services.matcher import Matcher, STATE_IDLE
 from services.message_buffer import MessageBuffer
 from services.session_registry import SessionRegistry
 from services.stats_cache import StatsCache
-from utils.helpers import safe_send
+from utils.status_card import untrack_status_card, update_status_card
 from utils.ratelimit import RateLimiter
 from utils.texts import CHAT_PARTNER_LEFT, SEARCH_TIMEOUT
 
@@ -60,11 +60,19 @@ async def post_init(application: Application) -> None:
 
     async def on_timeout(user_id: int) -> None:
         await db.set_state(user_id, STATE_IDLE)
-        application.bot_data.get("search_cards", {}).pop(user_id, None)
+        untrack_status_card(application, user_id)
         stats_cache = application.bot_data.get("stats_cache")
         if stats_cache:
             stats_cache.invalidate()
-        await safe_send(application, user_id, SEARCH_TIMEOUT)
+        from keyboards.buttons import main_menu_keyboard
+        from utils.texts import SEARCH_TIMEOUT
+
+        await update_status_card(
+            application,
+            user_id,
+            SEARCH_TIMEOUT,
+            reply_markup=main_menu_keyboard(),
+        )
 
     matcher.set_match_callback(on_match)
     matcher.set_timeout_callback(on_timeout)
@@ -75,7 +83,7 @@ async def post_init(application: Application) -> None:
     if orphaned:
         logger.info("Reset %s orphaned chat session(s)", len(orphaned))
         for uid in orphaned:
-            await safe_send(
+            await update_status_card(
                 application,
                 uid,
                 CHAT_PARTNER_LEFT,
@@ -88,7 +96,7 @@ async def post_init(application: Application) -> None:
         if stats_cache:
             stats_cache.invalidate()
 
-    application.bot_data["search_cards"] = {}
+    application.bot_data["status_cards"] = {}
     application.bot_data["pulse_idx"] = 0
     application.bot_data["pending_feedback"] = {}
 
@@ -204,6 +212,7 @@ def _build_application(config) -> Application:
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("stop", stop_command))
     app.add_handler(CommandHandler("report", report_command))
+    app.add_handler(CommandHandler("link", link_command))
     app.add_handler(CommandHandler("stats", admin_stats))
     app.add_handler(CommandHandler("user", admin_user))
     app.add_handler(CommandHandler("ban", admin_ban))

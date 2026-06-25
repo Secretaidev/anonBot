@@ -1,110 +1,69 @@
-"""Professional UI copy — clean, minimal, world-class stranger-chat UX.
-
-Regular users see ZERO stats or admin info.
-Every message is short, warm, and purposeful.
-"""
+"""Ultra-clean UI copy — one status card, zero chat clutter."""
 
 BRAND = "AnoyBot"
 
 WELCOME = (
-    "🎭 <b>Welcome to {brand}</b>\n"
-    "━━━━━━━━━━━━━━━━━━━━\n\n"
-    "Talk to strangers — completely anonymous.\n\n"
-    "🔒 <b>Private</b> — no names, no profiles shared\n"
-    "⚡ <b>Instant</b> — matched in seconds\n"
-    "🛡 <b>Safe</b> — report or block anytime\n\n"
-    "📜 <i>18+ only. Be respectful. No spam or harassment.</i>"
+    "🎭 <b>{brand}</b>\n\n"
+    "Anonymous stranger chat.\n"
+    "18+ · Be respectful · No spam."
 )
 
-SETUP_GENDER = (
-    "🎭 <b>Your Gender</b>\n"
-    "━━━━━━━━━━━━━━━━━━━━\n\n"
-    "Used only for matching — your partner never sees this."
-)
-
-SETUP_LOOKING = (
-    "💫 <b>Who would you like to meet?</b>\n"
-    "━━━━━━━━━━━━━━━━━━━━"
-)
+SETUP_GENDER = "🎭 Pick your gender <i>(private, for matching only)</i>"
+SETUP_LOOKING = "💫 Who do you want to meet?"
 
 READY = (
-    "✅ <b>You're all set</b>\n"
-    "━━━━━━━━━━━━━━━━━━━━\n\n"
-    "🎭 {gender}  ·  💫 {looking}\n\n"
-    "Tap below when you're ready to connect."
+    "✅ Ready · {gender} · {looking}\n\n"
+    "Tap below to connect."
 )
 
-SEARCHING = (
-    "🔍 <b>Finding someone…</b>\n"
-    "━━━━━━━━━━━━━━━━━━━━\n\n"
-    "{pulse} Scanning for a match…\n\n"
-    "<i>Stay on this screen — you'll connect automatically.</i>"
-)
+SEARCHING = "🔍 Finding someone… {pulse}"
 
-MATCHED = (
-    "🎉 <b>You're connected!</b>\n"
-    "━━━━━━━━━━━━━━━━━━━━\n\n"
-    "You're chatting <b>anonymously</b> with a stranger.\n"
-    "Say hi 👋 — text, photos, voice & stickers all work.\n\n"
-    "💡 <i>Tip: Ask an open question to break the ice.</i>\n"
-    "🛡 Use <b>Report</b> or <b>Block</b> if anything feels off."
-)
+MATCHED = "🟢 <b>Connected</b> — chat below. Media works too."
 
-CHAT_ENDED = "🔴 Chat ended."
-CHAT_PARTNER_LEFT = "👋 Your partner left the chat."
-CHAT_NEXT = "⏭ Finding your next partner…"
-SEARCH_CANCELLED = "🛑 Search cancelled."
-PARTNER_FOUND_HINT = "🎉 Connected!"
-SEARCH_BLOCKED_RETRY = "🔄 Searching for a new partner…"
-SEARCH_TIMEOUT = (
-    "⏱ <b>No match found</b>\n\n"
-    "Nobody's available right now. Tap 🔍 to try again."
-)
+CHAT_ENDED = "Chat ended."
+CHAT_PARTNER_LEFT = "Partner left."
+CHAT_NEXT = "🔍 Finding next partner… {pulse}"
+SEARCH_CANCELLED = "Search stopped."
+PARTNER_FOUND_HINT = "🟢 Connected — chat below."
+SEARCH_BLOCKED_RETRY = "🔍 Finding someone… {pulse}"
+SEARCH_TIMEOUT = "No one online. Tap 🔍 to retry."
 
-CONFIRM_END = (
-    "⚠️ <b>End this chat?</b>\n\n"
-    "Your partner will be notified."
-)
+CONFIRM_END = "End this chat?"
 
-SETTINGS = (
-    "⚙️ <b>Settings</b>\n"
-    "━━━━━━━━━━━━━━━━━━━━\n\n"
-    "🎭 Gender: {gender}\n"
-    "💫 Preference: {looking}"
-)
+SETTINGS = "⚙️ {gender} · {looking}"
 
 HELP = (
-    "❓ <b>How It Works</b>\n"
-    "━━━━━━━━━━━━━━━━━━━━\n\n"
-    "1️⃣ Set gender & who you want to meet\n"
-    "2️⃣ Tap <b>🔍 Find Partner</b>\n"
-    "3️⃣ Chat anonymously — all media works\n"
-    "4️⃣ <b>🔴 End</b> or <b>⏭ Next</b> anytime\n"
-    "5️⃣ <b>🚨 Report</b> or <b>🚫 Block</b> if needed\n\n"
-    "🔒 Your identity is never shared with your partner."
+    "<b>How it works</b>\n"
+    "1. Set gender & preference\n"
+    "2. Tap 🔍 Find Partner\n"
+    "3. Chat anonymously\n"
+    "4. End / Next / Report / Block anytime\n"
+    "5. Share profile safely with /link"
 )
 
-FEEDBACK = (
-    "⭐ <b>Rate this chat</b>\n\n"
-    "How was your conversation?"
-)
+FEEDBACK = "Rate this chat:"
+FEEDBACK_THANKS = "Thanks!"
 
-FEEDBACK_THANKS = "⭐ Thanks — your feedback helps keep the community great."
+BANNED = "🚫 Account restricted."
+NOT_IN_CHAT = ""  # silent — no spam when idle
+RATE_LIMITED = "Slow down a bit."
+REPORT_SENT = "Report sent. We'll review it."
+REPORT_PROMPT = "Submit report?"
 
-BANNED = "🚫 Your account has been restricted."
-NOT_IN_CHAT = "💡 You're not in a chat. Tap 🔍 to find someone."
-RATE_LIMITED = "⏳ Slow down — you're sending messages too fast."
-REPORT_SENT = "🚨 <b>Report submitted.</b> Our team will review it."
-REPORT_PROMPT = "Submit a report? We'll look into it right away."
+SPAM_BLOCKED = "Links & @usernames blocked. Use /link to share your profile."
+LINK_SHARED = "Profile shared with your partner."
+LINK_RECEIVED = "Your partner shared their profile:\n{link}"
+LINK_NO_USERNAME = "Set a Telegram @username first, then use /link."
+LINK_NOT_IN_CHAT = "You're not in a chat."
 
-STOP_IDLE = "💡 Nothing to stop. Use /start."
-STOP_SEARCH = "🛑 Search stopped."
-STOP_CHAT = "🔴 Chat ended."
+STOP_IDLE = "Nothing to stop."
+STOP_SEARCH = "Search stopped."
+STOP_CHAT = "Chat ended."
 
 GENDER_LABELS = {"male": "👨 Male", "female": "👩 Female", "other": "🌈 Other"}
 LOOKING_LABELS = {"male": "👨 Boys", "female": "👩 Girls", "any": "🌍 Anyone"}
 
-PULSE_FRAMES = ("⏳", "🔎", "📡", "✨", "🌐")
+PULSE_FRAMES = ("", "·", "··", "···")
 
 
 def gender_label(value: str | None) -> str:
