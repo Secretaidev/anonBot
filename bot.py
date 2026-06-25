@@ -19,7 +19,7 @@ from telegram.ext import (
     filters,
 )
 
-from config import load_config
+from config import Config, load_config
 from database import Database
 from handlers.admin import admin_ban, admin_broadcast, admin_stats, admin_unban, admin_user
 from handlers.callbacks import callback_handler
@@ -32,6 +32,8 @@ from handlers.stop import stop_command
 from keyboards.buttons import main_menu_keyboard
 from services.jobs import notify_startup, search_pulse_job, setup_bot_commands
 from services.matcher import Matcher, STATE_IDLE
+from services.message_buffer import MessageBuffer
+from services.session_registry import SessionRegistry
 from services.stats_cache import StatsCache
 from utils.helpers import safe_send
 from utils.ratelimit import RateLimiter
@@ -99,6 +101,14 @@ async def post_init(application: Application) -> None:
         first=config.search_pulse_seconds,
         name="search_pulse",
     )
+    application.job_queue.run_repeating(
+        _message_flush_job,
+        interval=config.message_log_flush_seconds,
+        first=config.message_log_flush_seconds,
+        name="message_log_flush",
+    )
+
+    application.bot_data["session_registry"].clear()
 
     await setup_bot_commands(application)
     await notify_startup(application)
@@ -108,9 +118,12 @@ async def post_init(application: Application) -> None:
 
 
 async def post_shutdown(application: Application) -> None:
-    """Graceful shutdown — close DB connection cleanly."""
+    """Graceful shutdown — flush pending logs and close DB."""
     db: Database = application.bot_data["db"]
-    config = application.bot_data["config"]
+    config: Config = application.bot_data["config"]
+    buffer: MessageBuffer | None = application.bot_data.get("message_buffer")
+    if buffer:
+        await buffer.flush()
 
     # Notify log channel
     try:
@@ -136,11 +149,18 @@ async def _timeout_job(context) -> None:
         logger.info("Timed out %s search(es)", len(expired))
 
 
+async def _message_flush_job(context) -> None:
+    buffer: MessageBuffer | None = context.application.bot_data.get("message_buffer")
+    if buffer:
+        await buffer.flush()
+
+
 def _build_application(config) -> Application:
     db = Database(
         config.mongodb_url,
         config.mongodb_db_name,
         user_cache_seconds=float(config.user_cache_seconds),
+        upsert_cooldown_seconds=float(config.upsert_cooldown_seconds),
     )
     matcher = Matcher(
         db=db,
@@ -149,6 +169,8 @@ def _build_application(config) -> Application:
     )
     rate_limiter = RateLimiter(max_events=config.rate_limit_per_minute)
     stats_cache = StatsCache(ttl_seconds=float(config.stats_cache_seconds))
+    session_registry = SessionRegistry()
+    message_buffer = MessageBuffer(db, max_batch=config.message_log_batch_size)
 
     builder = (
         Application.builder()
@@ -174,6 +196,8 @@ def _build_application(config) -> Application:
     app.bot_data["matcher"] = matcher
     app.bot_data["rate_limiter"] = rate_limiter
     app.bot_data["stats_cache"] = stats_cache
+    app.bot_data["session_registry"] = session_registry
+    app.bot_data["message_buffer"] = message_buffer
 
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("menu", menu_command))

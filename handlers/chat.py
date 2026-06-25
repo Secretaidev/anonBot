@@ -1,9 +1,11 @@
-"""Message relay — fastest possible hot path.
+"""Message relay — zero-DB hot path via SessionRegistry.
 
 Hot-path optimizations:
-  • Single get_user() for ban+state+partner check (was 3 separate)
+  • SessionRegistry lookup (no MongoDB on relay)
+  • Ban check via user cache only when not in active session fast-path
   • Zero-await rate limiter
-  • Fire-and-forget for ALL logging (channel + DB)
+  • Fire-and-forget for ALL logging (channel + batched DB buffer)
+  • Throttled typing indicators
   • Panel interception only checked if panel_await is set
 """
 
@@ -18,7 +20,9 @@ from database import Database
 from handlers.panel import handle_panel_input
 from handlers.session import end_chat
 from services.logger import log_to_channel_bg
+from services.message_buffer import MessageLogEntry
 from services.relay import copy_to_partner, forward_typing
+from services.session_registry import SessionRegistry
 from utils.helpers import get_message_type
 from utils.ratelimit import RateLimiter
 from utils.texts import BANNED, NOT_IN_CHAT, RATE_LIMITED, REPORT_SENT
@@ -38,7 +42,6 @@ async def relay_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not update.effective_user or not update.message:
         return
 
-    # ── Panel input — only check if a panel flow is pending ──
     if context.user_data.get("panel_await"):
         if await handle_panel_input(update, context):
             return
@@ -47,25 +50,27 @@ async def relay_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     db: Database = context.bot_data["db"]
     config: Config = context.bot_data["config"]
     limiter: RateLimiter = context.bot_data["rate_limiter"]
+    registry: SessionRegistry = context.bot_data["session_registry"]
 
-    # ── Single DB read for ban + state + partner (was 3 reads) ──
-    record = await db.get_user(user.id)
-    if not record:
-        return
+    active = registry.get(user.id)
+    if active:
+        partner_id = active.partner_id
+        session_id = active.session_id
+    else:
+        record = await db.get_user(user.id)
+        if not record:
+            return
+        if record.get("is_banned"):
+            await update.message.reply_text(BANNED, parse_mode="HTML")
+            return
+        state = record.get("state")
+        partner_id = record.get("partner_id")
+        session_id = record.get("session_id")
+        if state != "chatting" or not partner_id or not session_id:
+            await update.message.reply_text(NOT_IN_CHAT, parse_mode="HTML")
+            return
+        registry.connect(user.id, partner_id, session_id)
 
-    if record.get("is_banned"):
-        await update.message.reply_text(BANNED, parse_mode="HTML")
-        return
-
-    state = record.get("state")
-    partner_id = record.get("partner_id")
-    session_id = record.get("session_id")
-
-    if state != "chatting" or not partner_id:
-        await update.message.reply_text(NOT_IN_CHAT, parse_mode="HTML")
-        return
-
-    # Synchronous rate limiter — zero await
     if not limiter.allow(user.id):
         await update.message.reply_text(RATE_LIMITED, parse_mode="HTML")
         return
@@ -80,8 +85,14 @@ async def relay_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
         return
 
-    # ── Typing indicator + Relay (concurrent for zero latency) ──
-    typing_task = asyncio.create_task(forward_typing(context, partner_id, msg))
+    typing_task = asyncio.create_task(
+        forward_typing(
+            context,
+            partner_id,
+            msg,
+            cooldown_seconds=config.typing_cooldown_seconds,
+        )
+    )
     typing_task.add_done_callback(_task_error_cb)
 
     ok = await copy_to_partner(context, msg, partner_id, sender_id=user.id)
@@ -91,7 +102,6 @@ async def relay_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await end_chat(context, user.id, reason="partner_left")
         return
 
-    # ── Fire-and-forget logging — ZERO blocking ──
     if session_id and config.log_channel_id and config.log_chat_messages:
         log_to_channel_bg(
             context,
@@ -108,16 +118,31 @@ async def relay_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
 
     if session_id:
-        task = asyncio.create_task(
-            db.log_message(
-                session_id=session_id,
-                sender_id=user.id,
-                receiver_id=partner_id,
-                message_type=msg_type,
-                content_preview=content[:500],
+        buffer = context.bot_data.get("message_buffer")
+        if buffer:
+            task = asyncio.create_task(
+                buffer.enqueue(
+                    MessageLogEntry(
+                        session_id=session_id,
+                        sender_id=user.id,
+                        receiver_id=partner_id,
+                        message_type=msg_type,
+                        content_preview=content[:500],
+                    )
+                )
             )
-        )
-        task.add_done_callback(_task_error_cb)
+            task.add_done_callback(_task_error_cb)
+        else:
+            task = asyncio.create_task(
+                db.log_message(
+                    session_id=session_id,
+                    sender_id=user.id,
+                    receiver_id=partner_id,
+                    message_type=msg_type,
+                    content_preview=content[:500],
+                )
+            )
+            task.add_done_callback(_task_error_cb)
 
 
 async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -127,10 +152,17 @@ async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user = update.effective_user
     db: Database = context.bot_data["db"]
     config: Config = context.bot_data["config"]
+    registry: SessionRegistry = context.bot_data["session_registry"]
 
-    record = await db.get_user(user.id, fresh=True)
-    partner_id = record.get("partner_id") if record else None
-    session_id = record.get("session_id") if record else None
+    active = registry.get(user.id)
+    if active:
+        partner_id = active.partner_id
+        session_id = active.session_id
+    else:
+        record = await db.get_user(user.id, fresh=True)
+        partner_id = record.get("partner_id") if record else None
+        session_id = record.get("session_id") if record else None
+
     reason = " ".join(context.args) if context.args else "No details provided"
 
     if partner_id:
@@ -139,10 +171,10 @@ async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             count = await db.increment_reports(partner_id)
             if count >= config.auto_ban_reports:
                 await db.ban_user(partner_id, f"Auto-ban after {count} reports")
+                registry.disconnect(partner_id)
         except Exception:
             pass
 
-    from services.logger import log_to_channel
     from keyboards.buttons import main_menu_keyboard
 
     log_to_channel_bg(

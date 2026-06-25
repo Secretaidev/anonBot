@@ -625,6 +625,7 @@ async def handle_panel_input(
         reason = text if text != "-" else "Banned by admin"
         await db.ban_user(target_id, reason)
         await matcher.leave(target_id)
+        context.bot_data["session_registry"].disconnect(target_id)
         await safe_send(context, target_id, f"🚫 You have been banned.\nReason: {reason}")
         await update.message.reply_text(
             f"✅ Banned <code>{target_id}</code>.\nReason: {escape(reason)}",

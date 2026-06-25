@@ -24,7 +24,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     matcher: Matcher = context.bot_data["matcher"]
     user = update.effective_user
 
-    await db.upsert_user(user.id, user.username, user.first_name, user.last_name)
+    await db.upsert_user(
+        user.id, user.username, user.first_name, user.last_name, force=True
+    )
 
     if await is_banned(db, user.id):
         await update.message.reply_text(BANNED, parse_mode="HTML")

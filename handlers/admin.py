@@ -115,6 +115,7 @@ async def admin_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     await db.ban_user(target_id, reason)
     await matcher.leave(target_id)
+    context.bot_data["session_registry"].disconnect(target_id)
 
     await safe_send(context, target_id, f"🚫 You have been banned.\nReason: {reason}")
     await update.message.reply_text(f"✅ Banned {target_id}")

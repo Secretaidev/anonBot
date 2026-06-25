@@ -29,9 +29,11 @@ class Database:
         "mongodb_url",
         "db_name",
         "user_cache_seconds",
+        "upsert_cooldown_seconds",
         "_client",
         "_db",
         "_user_cache",
+        "_upsert_recent",
         "_cache_lock",
         "_last_gc",
     )
@@ -42,13 +44,16 @@ class Database:
         db_name: str = "anoybot",
         *,
         user_cache_seconds: float = 8.0,
+        upsert_cooldown_seconds: float = 45.0,
     ) -> None:
         self.mongodb_url = mongodb_url
         self.db_name = db_name
         self.user_cache_seconds = user_cache_seconds
+        self.upsert_cooldown_seconds = upsert_cooldown_seconds
         self._client: AsyncIOMotorClient | None = None
         self._db: AsyncIOMotorDatabase | None = None
         self._user_cache: dict[int, tuple[float, dict[str, Any]]] = {}
+        self._upsert_recent: dict[int, float] = {}
         self._cache_lock = asyncio.Lock()
         self._last_gc: float = 0.0
 
@@ -279,7 +284,17 @@ class Database:
         username: str | None,
         first_name: str | None,
         last_name: str | None,
+        *,
+        force: bool = False,
     ) -> dict[str, Any]:
+        now_mono = time.monotonic()
+        if not force:
+            last = self._upsert_recent.get(user_id, 0.0)
+            if now_mono - last < self.upsert_cooldown_seconds:
+                cached = await self.get_user(user_id)
+                if cached:
+                    return cached
+
         now = self._now_iso()
         await self.db.users.update_one(
             {"user_id": user_id},
@@ -298,7 +313,8 @@ class Database:
             },
             upsert=True,
         )
-        user = await self.get_user(user_id)
+        self._upsert_recent[user_id] = now_mono
+        user = await self.get_user(user_id, fresh=True)
         return user or {}
 
     async def accept_rules(self, user_id: int) -> None:
@@ -571,30 +587,67 @@ class Database:
         message_type: str,
         content_preview: str,
     ) -> None:
-        now = self._now()  # datetime for TTL index
-        # Fire all 3 writes in parallel — none blocks on the others
-        await asyncio.gather(
-            self.db.message_logs.insert_one(
-                {
-                    "session_id": session_id,
-                    "sender_id": sender_id,
-                    "receiver_id": receiver_id,
-                    "message_type": message_type,
-                    "content_preview": content_preview[:500],
-                    "created_at": now,
-                }
-            ),
-            self.db.sessions.update_one(
-                {"session_id": session_id},
-                {"$inc": {"message_count": 1}},
-            ),
-            self.db.users.update_one(
-                {"user_id": sender_id},
-                {"$inc": {"total_messages": 1}, "$set": {"last_active_at": self._now_iso()}},
-            ),
-            return_exceptions=True,
-        )
-        self.invalidate_user(sender_id)
+        class _Entry:
+            __slots__ = ("session_id", "sender_id", "receiver_id", "message_type", "content_preview")
+
+            def __init__(self) -> None:
+                self.session_id = session_id
+                self.sender_id = sender_id
+                self.receiver_id = receiver_id
+                self.message_type = message_type
+                self.content_preview = content_preview[:500]
+
+        await self.log_messages_batch([_Entry()])
+
+    async def log_messages_batch(self, entries: list) -> None:
+        """Bulk insert logs + aggregate counter bumps — one round-trip per collection."""
+        if not entries:
+            return
+
+        now = self._now()
+        now_iso = self._now_iso()
+
+        logs = [
+            {
+                "session_id": e.session_id,
+                "sender_id": e.sender_id,
+                "receiver_id": e.receiver_id,
+                "message_type": e.message_type,
+                "content_preview": e.content_preview[:500],
+                "created_at": now,
+            }
+            for e in entries
+        ]
+
+        session_counts: dict[str, int] = {}
+        user_counts: dict[int, int] = {}
+        for e in entries:
+            session_counts[e.session_id] = session_counts.get(e.session_id, 0) + 1
+            user_counts[e.sender_id] = user_counts.get(e.sender_id, 0) + 1
+
+        from pymongo import UpdateOne
+
+        session_ops = [
+            UpdateOne({"session_id": sid}, {"$inc": {"message_count": count}})
+            for sid, count in session_counts.items()
+        ]
+        user_ops = [
+            UpdateOne(
+                {"user_id": uid},
+                {"$inc": {"total_messages": count}, "$set": {"last_active_at": now_iso}},
+            )
+            for uid, count in user_counts.items()
+        ]
+
+        tasks = [self.db.message_logs.insert_many(logs, ordered=False)]
+        if session_ops:
+            tasks.append(self.db.sessions.bulk_write(session_ops, ordered=False))
+        if user_ops:
+            tasks.append(self.db.users.bulk_write(user_ops, ordered=False))
+
+        await asyncio.gather(*tasks, return_exceptions=True)
+        for uid in user_counts:
+            self.invalidate_user(uid)
 
     # ──────────────────────────────────────────────────────────────
     # Blocking & reporting

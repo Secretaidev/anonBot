@@ -17,6 +17,7 @@ from database import Database
 from keyboards.buttons import feedback_keyboard, main_menu_keyboard
 from services.logger import log_to_channel_bg
 from services.matcher import Matcher, STATE_CHATTING, STATE_IDLE, STATE_SEARCHING
+from services.session_registry import SessionRegistry
 from utils.helpers import is_valid_chat_session, safe_send, untrack_search_card
 from utils.texts import (
     CHAT_ENDED, CHAT_NEXT, CHAT_PARTNER_LEFT,
@@ -78,6 +79,9 @@ async def notify_matched(
         logger.warning("match session invalid after connect: %s <-> %s", user_a, user_b)
         return
 
+    registry: SessionRegistry = context.bot_data["session_registry"]
+    registry.connect(user_a, user_b, session_id)
+
     # Send match notifications in parallel
     kb = main_menu_keyboard(is_chatting=True)
     await asyncio.gather(
@@ -120,6 +124,9 @@ async def end_chat(
 
     partner_id = record.get("partner_id")
     session_id = record.get("session_id")
+
+    registry: SessionRegistry = context.bot_data["session_registry"]
+    registry.disconnect(user_id)
 
     # Parallel reset — prevents double-execution race
     reset_tasks = [db.set_state(user_id, STATE_IDLE, partner_id=None, session_id=None)]

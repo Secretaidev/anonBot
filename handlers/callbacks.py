@@ -68,12 +68,8 @@ from utils.texts import (
 )
 
 
-async def _search_screen(
-    context: ContextTypes.DEFAULT_TYPE,
-    matcher: Matcher,
-    stats: dict,
-) -> str:
-    """Build the animated search screen text — clean, no stats."""
+async def _search_screen(context: ContextTypes.DEFAULT_TYPE) -> str:
+    """Build the animated search screen text — zero DB calls."""
     pulse_idx = context.application.bot_data.get("pulse_idx", 0)
     from utils.texts import PULSE_FRAMES
     pulse = PULSE_FRAMES[pulse_idx % len(PULSE_FRAMES)]
@@ -122,10 +118,7 @@ async def _start_search(
         await matcher.join(user_id, record["gender"], record["looking_for"])
 
     stats = {}
-    if stats_cache:
-        stats = await stats_cache.get(context.bot_data["db"].get_stats)
-
-    text = await _search_screen(context, matcher, stats)
+    text = await _search_screen(context)
     await safe_edit(
         query,
         text,
@@ -286,6 +279,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 count = await db.increment_reports(partner_id)
                 if count >= config.auto_ban_reports:
                     await db.ban_user(partner_id, f"Auto-ban after {count} reports")
+                    context.bot_data["session_registry"].disconnect(partner_id)
             except Exception:
                 pass
         await log_to_channel(

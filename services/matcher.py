@@ -1,9 +1,10 @@
 """Hybrid matchmaking: in-memory speed + MongoDB atomic claims.
 
 Professional-grade features:
-  • Bucket-indexed O(1) candidate lookup
+  • Correct partner-gender bucket lookup (O(candidates) not O(queue))
   • Preference widening after configurable delay
   • Pre-fetched block data (DB outside lock)
+  • DB claim outside lock — never block queue on MongoDB latency
   • Atomic session claiming
   • Timeout sweep with batched callbacks
   • Queue rehydration on restart
@@ -26,6 +27,7 @@ logger = logging.getLogger(__name__)
 GENDER_MALE = "male"
 GENDER_FEMALE = "female"
 GENDER_OTHER = "other"
+ALL_GENDERS = (GENDER_MALE, GENDER_FEMALE, GENDER_OTHER)
 
 STATE_IDLE = "idle"
 STATE_SEARCHING = "searching"
@@ -101,29 +103,37 @@ class Matcher:
             if not bucket:
                 del self._buckets[key]
 
+    def _partner_bucket_keys(self, entry: QueueEntry) -> list[str]:
+        """Buckets that may hold compatible partners (by partner gender + preference)."""
+        looking = _effective_looking_for(entry)
+        keys: list[str] = []
+        if looking == LOOKING_ANY:
+            for gender in ALL_GENDERS:
+                keys.append(self._bucket_key(gender, entry.gender))
+                keys.append(self._bucket_key(gender, LOOKING_ANY))
+        else:
+            keys.append(self._bucket_key(looking, entry.gender))
+            keys.append(self._bucket_key(looking, LOOKING_ANY))
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for key in keys:
+            if key not in seen:
+                seen.add(key)
+                ordered.append(key)
+        return ordered
+
     def _candidate_ids(self, entry: QueueEntry) -> list[int]:
         """Find candidates sorted by wait time (longest first = fairest)."""
-        looking = _effective_looking_for(entry)
-        keys = [self._bucket_key(entry.gender, looking)]
-        if looking != LOOKING_ANY:
-            keys.append(self._bucket_key(entry.gender, LOOKING_ANY))
-        keys.append("*")
-
         seen: set[int] = set()
         candidates: list[tuple[float, int]] = []
-        for key in keys:
-            if key == "*":
-                ids = self._queue.keys()
-            else:
-                ids = self._buckets.get(key, ())
-            for uid in ids:
-                if uid not in seen and uid != entry.user_id:
-                    seen.add(uid)
-                    other = self._queue.get(uid)
-                    if other:
-                        candidates.append((other.joined_at, uid))
-
-        # Sort by join time ascending = longest waiting first
+        for key in self._partner_bucket_keys(entry):
+            for uid in self._buckets.get(key, ()):
+                if uid in seen or uid == entry.user_id:
+                    continue
+                seen.add(uid)
+                other = self._queue.get(uid)
+                if other and _compatible(entry, other):
+                    candidates.append((other.joined_at, uid))
         candidates.sort()
         return [uid for _, uid in candidates]
 
@@ -155,13 +165,11 @@ class Matcher:
     async def join(self, user_id: int, gender: str, looking_for: str) -> tuple[bool, str | None]:
         """Join the search queue or immediately match.
 
-        Architecture: Pre-fetch all DB data OUTSIDE the lock, then hold lock
-        only for fast in-memory queue mutations.
+        DB reads and claims happen OUTSIDE the asyncio lock.
         """
         session_id: str | None = None
         match_pair: tuple[int, int] | None = None
 
-        # ── Pre-fetch DB data outside lock ──
         blocked: set[int] = set()
         if self.db:
             record = await self.db.get_user(user_id, fresh=True)
@@ -181,7 +189,7 @@ class Matcher:
 
             blocked = await self.db.get_block_set(user_id)
 
-        # ── Lock only for queue mutations ──
+        queued_for_db = False
         async with self._lock:
             if user_id in self._queue:
                 old = self._queue[user_id]
@@ -213,33 +221,38 @@ class Matcher:
                     match_pair = (user_id, other_id)
                     break
 
-            if not match_pair and self.db:
-                claim = await self.db.claim_searching_partner(
-                    user_id, gender, _effective_looking_for(entry), blocked
-                )
-                if claim:
-                    partner_id, session_id = claim
-                    self._queue.pop(user_id, None)
-                    partner_entry = self._queue.pop(partner_id, None)
-                    if partner_entry:
-                        self._remove_from_bucket(partner_entry)
-                    match_pair = (user_id, partner_id)
-
             if not match_pair:
                 self._queue[user_id] = entry
                 self._add_to_bucket(entry)
+                queued_for_db = True
+
+        if not match_pair and queued_for_db and self.db:
+            claim = await self.db.claim_searching_partner(
+                user_id, gender, _effective_looking_for(entry), blocked
+            )
+            if claim:
+                partner_id, session_id = claim
+                async with self._lock:
+                    stale = self._queue.pop(user_id, None)
+                    if stale:
+                        self._remove_from_bucket(stale)
+                    partner_entry = self._queue.pop(partner_id, None)
+                    if partner_entry:
+                        self._remove_from_bucket(partner_entry)
+                match_pair = (user_id, partner_id)
+            else:
                 return False, None
 
-            self._queue.pop(user_id, None)
-
-        # ── Match callback OUTSIDE lock ──
         if match_pair and session_id and self._on_match:
             try:
                 await self._on_match(match_pair[0], match_pair[1], session_id)
             except Exception as exc:
                 logger.exception("match callback failed: %s", exc)
+            return True, session_id
 
-        return True, session_id
+        if match_pair:
+            return True, session_id
+        return False, None
 
     async def leave(self, user_id: int) -> bool:
         async with self._lock:
@@ -275,7 +288,6 @@ class Matcher:
                     self._remove_from_bucket(entry)
                     expired.append(uid)
 
-        # Fire callbacks outside lock
         if self._on_timeout:
             for uid in expired:
                 try:

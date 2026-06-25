@@ -27,6 +27,10 @@ class Config:
     log_chat_messages: bool
     broadcast_concurrency: int
     flood_notify_cooldown: int
+    message_log_batch_size: int
+    message_log_flush_seconds: int
+    typing_cooldown_seconds: float
+    upsert_cooldown_seconds: float
 
 
 def load_config() -> Config:
@@ -65,4 +69,8 @@ def load_config() -> Config:
         log_chat_messages=os.getenv("LOG_CHAT_MESSAGES", "true").strip().lower() in ("1", "true", "yes"),
         broadcast_concurrency=int(os.getenv("BROADCAST_CONCURRENCY", "20")),
         flood_notify_cooldown=int(os.getenv("FLOOD_NOTIFY_COOLDOWN", "30")),
+        message_log_batch_size=int(os.getenv("MESSAGE_LOG_BATCH_SIZE", "40")),
+        message_log_flush_seconds=int(os.getenv("MESSAGE_LOG_FLUSH_SECONDS", "8")),
+        typing_cooldown_seconds=float(os.getenv("TYPING_COOLDOWN_SECONDS", "4")),
+        upsert_cooldown_seconds=float(os.getenv("UPSERT_COOLDOWN_SECONDS", "45")),
     )
